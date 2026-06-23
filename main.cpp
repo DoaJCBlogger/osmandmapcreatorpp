@@ -487,6 +487,7 @@ void writeOsmAndStructure_mapIndex_levels_block() {
 	uint32_t coordinatesCount = 0;
 	uint32_t nodesWithinWay = 0;
 	bool isArea = false;
+	uint64_t prevLatInt32, prevLonInt32; //The previous latitude and longitude with the cumulative rounding errors
 
 	//Ways
 	uint64_t wayIDIndex = 0;
@@ -522,37 +523,27 @@ void writeOsmAndStructure_mapIndex_levels_block() {
 				firstNodeID = node_id;
 
 				//The delta is based on the top-left point of the bounding box
-				deltaLat = latitudeToInt32(lat, 21);
+				prevLatInt32 = latitudeToInt32(lat, 21);
+				deltaLat = prevLatInt32;
 				deltaLat -= overallBoundingRectangle.topInt32;
-				deltaLon = longitudeToInt32(lon, 21);
+				prevLonInt32 = longitudeToInt32(lon, 21);
+				deltaLon = prevLonInt32;
 				deltaLon -= overallBoundingRectangle.leftInt32;
 			} else {
 				//The delta is based on the previous node
 				//We have to handle the cumulative rounding error since the format right-shifts the value by 5 bits
-				//It will always be positive (-75 rounded to -96 returns 21 and 75 rounded to 64 returns 11) so just add it whether the value is negative or not
-				deltaLat = latitudeToInt32(lat, 21);
-				deltaLat -= latitudeToInt32(prevLat, 21);
-				latRoundingError += deltaLat & 0x1f;
-				if (latRoundingError >= 32) {
-					//Add whole 32's to the latitude and remove them from the rounding error
-					deltaLat += latRoundingError & 0xFFFFFFFFFFFFFFE0;
-					latRoundingError &= 0x1f;
-				}
-				deltaLon = longitudeToInt32(lon, 21);
-				deltaLon -= longitudeToInt32(prevLon, 21);
-				lonRoundingError += deltaLon & 0x1f;
-				if (lonRoundingError >= 32) {
-					//Add whole 32's to the longitude and remove them from the rounding error
-					deltaLon += lonRoundingError & 0xFFFFFFFFFFFFFFE0;
-					lonRoundingError &= 0x1f;
-				}
+				//Keep track of all the previous deltas by adding the rounded ones so we can base the current one on that instead of the accurate values
+				deltaLat = ((latitudeToInt32(lat, 21) - prevLatInt32) >> 5) << 5;
+				prevLatInt32 += deltaLat;
+				deltaLon = ((longitudeToInt32(lon, 21) - prevLonInt32) >> 5) << 5;
+				prevLonInt32 += deltaLon;
 			}
 			//If this is the last node in the way, add 32 (1 after right-shifting by 5) to the delta if there is at least 16 rounding error left
-			if (index_within_way == nodesWithinWay) {
+			/*if (index_within_way == nodesWithinWay) {
 				if (latRoundingError >= 16) deltaLat += 32;
 				if (lonRoundingError >= 16) deltaLon += 32;
 				isArea = firstNodeID == node_id;
-			}
+			}*/
 			//cout << endl << "deltaX=" << ((deltaLon >> 5) << 5) << ", deltaY=" << ((deltaLat >> 5) << 5);
 			//Write the delta values as sint32
 			deltaLat >>= 5;

@@ -9,6 +9,8 @@ OsmAndMapCreator++ is an unofficial utility that generates OsmAnd OBF maps from 
 3. (Recommended) Run the VACUUM SQL command to optimize the database
 4. Run **osmandmapcreator++.exe** with "-i \[input file\]" and optionally "-o \[output file\]". You can also just drag a \*.db file onto the EXE
 
+<br>Running on an Intel Core 2 Quad Q9550 in a VM with 1 GB of RAM
+
 ![Screenshot 1](docs/screenshot1.webp)
 
 ![Screenshot 2](docs/screenshot2.webp)

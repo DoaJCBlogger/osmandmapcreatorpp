@@ -476,7 +476,7 @@ void writeOsmAndStructure_mapIndex_levels_block() {
 	
 	//MapDataBlock.dataObjects
 	OsmAnd::OBF::MapData mapData;
-	uint64_t way_id, node_id, node_order, index_within_way;
+	uint64_t way_id, node_id, firstNodeID, node_order, index_within_way;
 	int64_t deltaLat, deltaLon;
 	double lat, lon, prevLat, prevLon;
 	unsigned char *coordinatesByteArrayPtr = coordinatesByteArrayGlobalPtr;
@@ -486,6 +486,7 @@ void writeOsmAndStructure_mapIndex_levels_block() {
 	uint32_t coordinatesByteLength = 0;
 	uint32_t coordinatesCount = 0;
 	uint32_t nodesWithinWay = 0;
+	bool isArea = false;
 
 	//Ways
 	uint64_t wayIDIndex = 0;
@@ -505,6 +506,7 @@ void writeOsmAndStructure_mapIndex_levels_block() {
 		additionalTypesByteArrayPtr = additionalTypesByteArrayGlobalPtr;
 		latRoundingError = 0;
 		lonRoundingError = 0;
+		isArea = false;
 		while ((rc = sqlite3_step(res)) == SQLITE_ROW) {
 			way_id = sqlite3_column_int64(res, 0);
 			node_id = sqlite3_column_int64(res, 1);
@@ -517,6 +519,7 @@ void writeOsmAndStructure_mapIndex_levels_block() {
 
 			if (index_within_way == 1) {
 				nodesWithinWay = sqlite3_column_int64(res, 8);
+				firstNodeID = node_id;
 
 				//The delta is based on the top-left point of the bounding box
 				deltaLat = latitudeToInt32(lat, 21);
@@ -548,6 +551,7 @@ void writeOsmAndStructure_mapIndex_levels_block() {
 			if (index_within_way == nodesWithinWay) {
 				if (latRoundingError >= 16) deltaLat += 32;
 				if (lonRoundingError >= 16) deltaLon += 32;
+				isArea = firstNodeID == node_id;
 			}
 			//cout << endl << "deltaX=" << ((deltaLon >> 5) << 5) << ", deltaY=" << ((deltaLat >> 5) << 5);
 			//Write the delta values as sint32
@@ -556,16 +560,20 @@ void writeOsmAndStructure_mapIndex_levels_block() {
 			uint64_t sint32;
 			//X (longitude)
 			sint32 = (abs(deltaLon) << 1) | (deltaLon < 0 ? 1 : 0);
-			coordinatesByteArrayPtr = google::protobuf::io::CodedOutputStream::WriteVarint32ToArray(sint32, coordinatesByteArrayPtr);
+			if (!isArea) coordinatesByteArrayPtr = google::protobuf::io::CodedOutputStream::WriteVarint32ToArray(sint32, coordinatesByteArrayPtr);
 			//Y (latitude)
 			sint32 = (abs(deltaLat) << 1) | (deltaLat < 0 ? 1 : 0);
-			coordinatesByteArrayPtr = google::protobuf::io::CodedOutputStream::WriteVarint32ToArray(sint32, coordinatesByteArrayPtr);
+			if (!isArea) coordinatesByteArrayPtr = google::protobuf::io::CodedOutputStream::WriteVarint32ToArray(sint32, coordinatesByteArrayPtr);
 			//coordinatesCount++;
 		}
 		sqlite3_finalize(res);
 
 		//MapData.coordinates
-		mapData.set_coordinates(reinterpret_cast<const char*>(coordinatesByteArrayGlobalPtr), (coordinatesByteArrayPtr - coordinatesByteArrayGlobalPtr));
+		if (isArea) {
+			mapData.set_areacoordinates(reinterpret_cast<const char*>(coordinatesByteArrayGlobalPtr), (coordinatesByteArrayPtr - coordinatesByteArrayGlobalPtr));
+		} else {
+			mapData.set_coordinates(reinterpret_cast<const char*>(coordinatesByteArrayGlobalPtr), (coordinatesByteArrayPtr - coordinatesByteArrayGlobalPtr));
+		}
 
 		//Write the tags
 

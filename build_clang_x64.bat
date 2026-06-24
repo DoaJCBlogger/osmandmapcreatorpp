@@ -1,4 +1,4 @@
 del /S osmandmapcreator++.exe
 del /S *.obj
-clang-cl.exe /std:c++17 -m64 -g0 /c /EHsc /MT -O3 -Wno-everything -DSQLITE_THREADSAFE=0 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_ENABLE_RTREE -DSQLITE_ENABLE_MATH_FUNCTIONS -D_FORTIFY_SOURCE=2 -DSQLITE_ENABLE_PERCENTILE sqlite/sqlite3.c fileformat.pb.cc OBF.pb.cc osmand_index.pb.cc osmand_region_info.pb.cc osmformat.pb.cc vector_tile.pb.cc main.cpp -I. -Isqlite
+clang-cl.exe /std:c++17 -m64 -g0 /c /EHsc /MT -O3 -Wno-everything -DSQLITE_THREADSAFE=2 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_ENABLE_RTREE -DSQLITE_ENABLE_MATH_FUNCTIONS -D_FORTIFY_SOURCE=2 -DSQLITE_ENABLE_PERCENTILE sqlite/sqlite3.c fileformat.pb.cc OBF.pb.cc osmand_index.pb.cc osmand_region_info.pb.cc osmformat.pb.cc vector_tile.pb.cc main.cpp -I. -Isqlite
 link.exe /RELEASE /LTCG /INCREMENTAL:NO /NOLOGO -subsystem:console,5.02 /MACHINE:X64 kernel32.lib ws2_32.lib mswsock.lib advapi32.lib user32.lib gdi32.lib comdlg32.lib winspool.lib -out:osmandmapcreator++.exe *.obj shell32.lib comctl32.lib libprotobuf.lib winmm.lib wldap32.lib crypt32.lib

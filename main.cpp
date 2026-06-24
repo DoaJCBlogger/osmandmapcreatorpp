@@ -158,7 +158,7 @@ int main(int argc, char** argv) {
 	additionalTypesByteArrayGlobalPtr = additionalTypesByteArrayTmpUniquePtr.get();
 	stringNamesByteArrayGlobalPtr = stringNamesByteArrayTmpUniquePtr.get();
 
-	int rc = sqlite3_open(inputFilename.c_str(), &db);
+	int rc = sqlite3_open_v2(inputFilename.c_str(), &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, NULL);
 	if (rc != SQLITE_OK) {
 		cout << endl << "Error opening database";
 		sqlite3_close(db);

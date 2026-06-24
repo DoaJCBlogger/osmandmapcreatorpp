@@ -32,8 +32,8 @@ uint64_t writeMapIndex(string name);
 void writeOsmAndStructure_mapIndex_rules(google::protobuf::io::CodedOutputStream &cos);
 void writeMapEncodingRule(string tag, string value, uint32_t minZoom);
 uint64_t GetSystemTimeAsUnixTime();
-int32_t latitudeToInt32(double latitude, uint32_t zoom);
-int32_t longitudeToInt32(double longitude, uint32_t zoom);
+static inline int32_t latitudeToInt32(double latitude, uint32_t zoom);
+static inline int32_t longitudeToInt32(double longitude, uint32_t zoom);
 void writeOsmAndStructure_mapIndex_levels(/*google::protobuf::io::CodedOutputStream &cos, BoundingRectangle *overallBoundingRectangle*/);
 void writeOsmAndStructure_mapIndex_levels_block();
 double int32ToLatitude(uint64_t in, uint32_t zoom);
@@ -524,28 +524,28 @@ void writeOsmAndStructure_mapIndex_levels_block() {
 				firstNodeID = node_id;
 
 				//The delta is based on the top-left point of the bounding box
-				deltaLat = ((latitudeToInt32(lat, 21) - overallBoundingRectangle.topInt32) >> 5) << 5;
+				deltaLat = latitudeToInt32(lat, 21) - overallBoundingRectangle.topInt32;
 				prevLatInt32 = overallBoundingRectangle.topInt32 + deltaLat;
-				deltaLon = ((longitudeToInt32(lon, 21) - overallBoundingRectangle.leftInt32) >> 5) << 5;
+				deltaLon = longitudeToInt32(lon, 21) - overallBoundingRectangle.leftInt32;
 				prevLonInt32 = overallBoundingRectangle.leftInt32 + deltaLon;
 			} else {
 				//The delta is based on the previous node
-				//We have to handle the cumulative rounding error since the format right-shifts the value by 5 bits
 				//Keep track of all the previous deltas by adding the rounded ones so we can base the current one on that instead of the accurate values
-				deltaLat = ((latitudeToInt32(lat, 21) - prevLatInt32) >> 5) << 5;
+				deltaLat = latitudeToInt32(lat, 21) - prevLatInt32;
 				prevLatInt32 += deltaLat;
-				deltaLon = ((longitudeToInt32(lon, 21) - prevLonInt32) >> 5) << 5;
+				deltaLon = longitudeToInt32(lon, 21) - prevLonInt32;
 				prevLonInt32 += deltaLon;
 			}
+			//cout << endl << "way deltaLat=" << deltaLat << " (lower 5 bits=" << (deltaLat & 0x1f) << "), deltaLon=" << deltaLon << " (lower 5 bits=" << (deltaLon & 0x1f) << ")" << endl;
 			//If this is the last node in the way, see if adding or subtracting 32 makes the end node coordinates more accurate
 			if (index_within_way == nodesWithinWay) {
-				int64_t valueWithDeltaPlus32, valueWithDeltaMinus32, plus32Difference, minus32Difference, currentDifference, min3_value;
+				/*int64_t valueWithDeltaPlus32, valueWithDeltaMinus32, plus32Difference, minus32Difference, currentDifference, min3_value;
 				valueWithDeltaPlus32 = prevLatInt32 + 32;
 				valueWithDeltaMinus32 = prevLatInt32 - 32;
 				plus32Difference = latitudeToInt32(lat, 21) - valueWithDeltaPlus32;
 				minus32Difference = latitudeToInt32(lat, 21) - valueWithDeltaMinus32;
 				currentDifference = latitudeToInt32(lat, 21) - prevLatInt32;
-				min3_value = min3(plus32Difference, minus32Difference, currentDifference);
+				min3_value = min3(abs(plus32Difference), abs(minus32Difference), abs(currentDifference));
 				if (plus32Difference == min3_value) {
 					deltaLat += 32;
 				}
@@ -564,7 +564,7 @@ void writeOsmAndStructure_mapIndex_levels_block() {
 				}
 				else if (minus32Difference == min3_value) {
 					deltaLon -= 32;
-				}
+				}*/
 
 				isArea = firstNodeID == node_id;
 			}
@@ -705,10 +705,9 @@ void writeOsmAndStructure_mapIndex_levels_block() {
 			lat = sqlite3_column_double(res, 1);
 			lon = sqlite3_column_double(res, 2);
 
-			deltaLat = latitudeToInt32(lat, 21);
-			deltaLat -= overallBoundingRectangle.topInt32;
-			deltaLon = longitudeToInt32(lon, 21);
-			deltaLon -= overallBoundingRectangle.leftInt32;
+			deltaLat = latitudeToInt32(lat, 21) - overallBoundingRectangle.topInt32;
+			deltaLon = longitudeToInt32(lon, 21) - overallBoundingRectangle.leftInt32;
+			//cout << endl << "node deltaLat=" << deltaLat << " (lower 5 bits=" << (deltaLat & 0x1f) << "), deltaLon=" << deltaLon << " (lower 5 bits=" << (deltaLon & 0x1f) << ")" << endl;
 			
 			deltaLat >>= 5;
 			deltaLon >>= 5;
@@ -873,13 +872,13 @@ double int32ToLongitude(uint64_t in, uint32_t zoom) {
 	return (((in/1024.0)/(1<<zoom))*360.0) - 180.0;
 }
 
-int32_t latitudeToInt32(double latitude, uint32_t zoom) {
-	double sign = (latitude < 0 ? -1.0 : 1.0);
-	return ((((asinh(tan((latitude * PI) / 180) / sign) / PI) - 1) * (1 << zoom)) / -2) * 1024;
+//Round the latitude and longitude int32 values to a multiple of 32 since the lower 5 bits are usually dropped anyway and preserving them introduces rounding errors
+static inline int32_t latitudeToInt32(double latitude, uint32_t zoom) {
+	return ((int32_t)(((((asinh(tan((latitude * PI) / 180) / (latitude < 0 ? -1.0 : 1.0)) / PI) - 1) * (1 << zoom)) / -2) * 1024)) & 0xffffffe0;
 }
 
-int32_t longitudeToInt32(double longitude, uint32_t zoom) {
-	return ((longitude + 180.0) / 360.0) * (1 << zoom) * 1024.0;
+static inline int32_t longitudeToInt32(double longitude, uint32_t zoom) {
+	return ((int32_t)(((longitude + 180.0) / 360.0) * (1 << zoom) * 1024.0)) & 0xffffffe0;
 }
 
 uint32_t getVarintRequiredBytes(uint64_t i) {

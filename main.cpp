@@ -28,14 +28,14 @@ uint64_t copyRawFileIntoCodedOutputStream(google::protobuf::io::CodedOutputStrea
 __int64 getFileSize(const wchar_t* name);
 std::wstring utf8_to_wstring(const std::string& str);
 std::string wstring_to_utf8(const std::wstring& str);
-uint64_t writeMapIndex(string name);
+uint64_t writeMapIndex(string name, uint32_t threadID, unsigned char *coordinatesByteArrayPtrWithinThread, unsigned char *typesByteArrayPtrWithinThread, unsigned char *additionalTypesByteArrayPtrWithinThread, unsigned char *stringNamesByteArrayPtrWithinThread);
 void writeOsmAndStructure_mapIndex_rules(google::protobuf::io::CodedOutputStream &cos);
 void writeMapEncodingRule(string tag, string value, uint32_t minZoom);
 uint64_t GetSystemTimeAsUnixTime();
 static inline int32_t latitudeToInt32(double latitude, uint32_t zoom);
 static inline int32_t longitudeToInt32(double longitude, uint32_t zoom);
-void writeOsmAndStructure_mapIndex_levels(/*google::protobuf::io::CodedOutputStream &cos, BoundingRectangle *overallBoundingRectangle*/);
-void writeOsmAndStructure_mapIndex_levels_block();
+void writeOsmAndStructure_mapIndex_levels(unsigned char *coordinatesByteArrayPtrWithinThread, unsigned char *typesByteArrayPtrWithinThread, unsigned char *additionalTypesByteArrayPtrWithinThread, unsigned char *stringNamesByteArrayPtrWithinThread);
+void writeOsmAndStructure_mapIndex_levels_block(unsigned char *coordinatesByteArrayPtrWithinThread, unsigned char *typesByteArrayPtrWithinThread, unsigned char *additionalTypesByteArrayPtrWithinThread, unsigned char *stringNamesByteArrayPtrWithinThread);
 double int32ToLatitude(uint64_t in, uint32_t zoom);
 double int32ToLongitude(uint64_t in, uint32_t zoom);
 uint32_t getVarintRequiredBytes(uint64_t i);
@@ -45,10 +45,6 @@ static inline int min3(int64_t a, int64_t b, int64_t c);
 #define FILE_COPY_BUFFER_SIZE (32 * 1048576) //This needs the parentheses or it will evaluate the numbers separately
 #define PI 3.1415926535
 unsigned char *fileCopyBuffer = nullptr;
-unsigned char *coordinatesByteArrayGlobalPtr = nullptr;
-unsigned char *typesByteArrayGlobalPtr = nullptr;
-unsigned char *additionalTypesByteArrayGlobalPtr = nullptr;
-unsigned char *stringNamesByteArrayGlobalPtr = nullptr;
 #define PROTOBUF_SERIALIZE_TEMP_BUFFER_SIZE 1048576
 static const char* GET_KEYS_AND_VALUES_SORTED_QUERY = "SELECT key, value, (key in (%HUMAN_READABLE_WHITELIST%) or key like 'addr:%') as human_readable, COUNT(*) p, COUNT(*) OVER () AS total_rows FROM (SELECT key, value FROM node_tags WHERE %MACHINE_READABLE_BLACKLIST% UNION ALL SELECT key, value FROM way_tags WHERE %MACHINE_READABLE_BLACKLIST%) q1 GROUP BY concat(key, \"=\", value) ORDER BY p DESC;";
 static const char* GET_WAY_AND_NODE_KEYS_SORTED_QUERY_BLACKLIST = "select key, count(key) as p, way from (select q1.*, 1 as way from way_tags q1 union all select q2.*, 0 as way from node_tags q2) where key not like 'tiger%' and key not like 'source%' and key not like 'attribution%' and key not like 'nhd%' and key not like 'power%' and key not like 'created_by%' and key not like 'seamark%' and key not like 'gnis%' and key not like 'fid%' and key not like 'fixme%' and key not like 'roof%' group by key order by p desc;";
@@ -153,10 +149,6 @@ int main(int argc, char** argv) {
 	unique_ptr<unsigned char[]> additionalTypesByteArrayTmpUniquePtr = make_unique<unsigned char[]>(1048576);
 	unique_ptr<unsigned char[]> stringNamesByteArrayTmpUniquePtr = make_unique<unsigned char[]>(1048576);
 	fileCopyBuffer = fileCopyBufferUniquePtr.get();
-	coordinatesByteArrayGlobalPtr = coordinatesByteArrayTmpUniquePtr.get();
-	typesByteArrayGlobalPtr = typesByteArrayTmpUniquePtr.get();
-	additionalTypesByteArrayGlobalPtr = additionalTypesByteArrayTmpUniquePtr.get();
-	stringNamesByteArrayGlobalPtr = stringNamesByteArrayTmpUniquePtr.get();
 
 	int rc = sqlite3_open_v2(inputFilename.c_str(), &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, NULL);
 	if (rc != SQLITE_OK) {
@@ -213,7 +205,7 @@ int main(int argc, char** argv) {
 	//Save the MapIndex to a temp file but don't write it to the OBF file yet
 	uint64_t mapIndexSize = 0;
 
-	writeMapIndex(inputFilePath.stem().string());
+	writeMapIndex(inputFilePath.stem().string(), 0 /* thread ID */, coordinatesByteArrayTmpUniquePtr.get(), typesByteArrayTmpUniquePtr.get(), additionalTypesByteArrayTmpUniquePtr.get(), stringNamesByteArrayTmpUniquePtr.get());
 	mapIndexSize = getFileSize(utf8_to_wstring("mapIndex").c_str());
 	currentDiskUsage += mapIndexSize;
 	//cout << endl << "mapIndex temp file size: " << mapIndexSize;
@@ -247,7 +239,7 @@ void printHelp() {
 	cout << endl << "\t-h\t\tPrint this message";
 }
 
-uint64_t writeMapIndex(string name) {
+uint64_t writeMapIndex(string name, uint32_t threadID, unsigned char *coordinatesByteArrayPtrWithinThread, unsigned char *typesByteArrayPtrWithinThread, unsigned char *additionalTypesByteArrayPtrWithinThread, unsigned char *stringNamesByteArrayPtrWithinThread) {
 	//Create a temp file for the MapIndex
 	ofstream mapIndexTemp("mapIndex", ios::binary);
 	google::protobuf::io::OstreamOutputStream mapIndexTempOstream(&mapIndexTemp);
@@ -266,7 +258,7 @@ uint64_t writeMapIndex(string name) {
 
 	//MapIndex.levels
 	mapIndexCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::kLevelsFieldNumber << 3) | 6);
-	writeOsmAndStructure_mapIndex_levels();
+	writeOsmAndStructure_mapIndex_levels(coordinatesByteArrayPtrWithinThread, typesByteArrayPtrWithinThread, additionalTypesByteArrayPtrWithinThread, stringNamesByteArrayPtrWithinThread);
 	int64_t mapRootLevelSize = getFileSize(L"mapRootLevel");
 	writeOBFVarint32or64BE(mapIndexCos, mapRootLevelSize);
 	//cout << endl << "mapRootLevel size = " << mapRootLevelSize;
@@ -345,7 +337,7 @@ void writeOsmAndStructure_mapIndex_rules(google::protobuf::io::CodedOutputStream
 }
 
 //OsmAndMapIndex.MapRootLevel
-void writeOsmAndStructure_mapIndex_levels(/*google::protobuf::io::CodedOutputStream &cos, BoundingRectangle *overallBoundingRectangle*/) {
+void writeOsmAndStructure_mapIndex_levels(unsigned char *coordinatesByteArrayPtrWithinThread, unsigned char *typesByteArrayPtrWithinThread, unsigned char *additionalTypesByteArrayPtrWithinThread, unsigned char *stringNamesByteArrayPtrWithinThread) {
 	remove("mapRootLevel");
 	ofstream mapRootLevelTemp("mapRootLevel", ios::binary);
 	google::protobuf::io::OstreamOutputStream mapRootLevelTempOstream(&mapRootLevelTemp);
@@ -398,13 +390,13 @@ void writeOsmAndStructure_mapIndex_levels(/*google::protobuf::io::CodedOutputStr
 
 	//MapRootLevel.blocks
 	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kBlocksFieldNumber << 3) | 2);
-	writeOsmAndStructure_mapIndex_levels_block();
+	writeOsmAndStructure_mapIndex_levels_block(coordinatesByteArrayPtrWithinThread, typesByteArrayPtrWithinThread, additionalTypesByteArrayPtrWithinThread, stringNamesByteArrayPtrWithinThread);
 	uint64_t mapDataBlockSize = getFileSize(L"mapDataBlock");
 	mapRootLevelTempCos.WriteVarint32(mapDataBlockSize);
 	copyRawFileIntoCodedOutputStream(mapRootLevelTempCos, "mapDataBlock", mapDataBlockSize);
 }
 
-void writeOsmAndStructure_mapIndex_levels_block() {
+void writeOsmAndStructure_mapIndex_levels_block(unsigned char *coordinatesByteArrayPtrWithinThread, unsigned char *typesByteArrayPtrWithinThread, unsigned char *additionalTypesByteArrayPtrWithinThread, unsigned char *stringNamesByteArrayPtrWithinThread) {
 	remove("mapDataBlock");
 	ofstream mapDataBlockTemp("mapDataBlock", ios::binary);
 	google::protobuf::io::OstreamOutputStream mapDataBlockTempOstream(&mapDataBlockTemp);
@@ -480,10 +472,10 @@ void writeOsmAndStructure_mapIndex_levels_block() {
 	uint64_t way_id, node_id, firstNodeID, node_order, index_within_way;
 	int64_t deltaLat, deltaLon;
 	double lat, lon, prevLat, prevLon;
-	unsigned char *coordinatesByteArrayPtr = coordinatesByteArrayGlobalPtr;
-	unsigned char *typesByteArrayPtr = typesByteArrayGlobalPtr;
-	unsigned char *additionalTypesByteArrayPtr = additionalTypesByteArrayGlobalPtr;
-	unsigned char *stringNamesByteArrayPtr = stringNamesByteArrayGlobalPtr;
+	unsigned char *coordinatesByteArrayPtr = coordinatesByteArrayPtrWithinThread;
+	unsigned char *typesByteArrayPtr = typesByteArrayPtrWithinThread;
+	unsigned char *additionalTypesByteArrayPtr = additionalTypesByteArrayPtrWithinThread;
+	unsigned char *stringNamesByteArrayPtr = stringNamesByteArrayPtrWithinThread;
 	uint32_t coordinatesByteLength = 0;
 	uint32_t coordinatesCount = 0;
 	uint32_t nodesWithinWay = 0;
@@ -503,9 +495,9 @@ void writeOsmAndStructure_mapIndex_levels_block() {
 		rc = sqlite3_prepare_v2(db, queryGetWayNodes.c_str(), -1, &res, 0);
 		coordinatesByteLength = 0;
 		coordinatesCount = 0;
-		coordinatesByteArrayPtr = coordinatesByteArrayGlobalPtr;
-		typesByteArrayPtr = typesByteArrayGlobalPtr;
-		additionalTypesByteArrayPtr = additionalTypesByteArrayGlobalPtr;
+		coordinatesByteArrayPtr = coordinatesByteArrayPtrWithinThread;
+		typesByteArrayPtr = typesByteArrayPtrWithinThread;
+		additionalTypesByteArrayPtr = additionalTypesByteArrayPtrWithinThread;
 		latRoundingError = 0;
 		lonRoundingError = 0;
 		isArea = false;
@@ -585,9 +577,9 @@ void writeOsmAndStructure_mapIndex_levels_block() {
 
 		//MapData.coordinates
 		if (isArea) {
-			mapData.set_areacoordinates(reinterpret_cast<const char*>(coordinatesByteArrayGlobalPtr), (coordinatesByteArrayPtr - coordinatesByteArrayGlobalPtr));
+			mapData.set_areacoordinates(reinterpret_cast<const char*>(coordinatesByteArrayPtrWithinThread), (coordinatesByteArrayPtr - coordinatesByteArrayPtrWithinThread));
 		} else {
-			mapData.set_coordinates(reinterpret_cast<const char*>(coordinatesByteArrayGlobalPtr), (coordinatesByteArrayPtr - coordinatesByteArrayGlobalPtr));
+			mapData.set_coordinates(reinterpret_cast<const char*>(coordinatesByteArrayPtrWithinThread), (coordinatesByteArrayPtr - coordinatesByteArrayPtrWithinThread));
 		}
 
 		//Write the tags
@@ -603,9 +595,9 @@ void writeOsmAndStructure_mapIndex_levels_block() {
 		//string tag = "";
 		string key = "";
 		string value = "";
-		typesByteArrayPtr = typesByteArrayGlobalPtr;
-		additionalTypesByteArrayPtr = additionalTypesByteArrayGlobalPtr;
-		stringNamesByteArrayPtr = stringNamesByteArrayGlobalPtr;
+		typesByteArrayPtr = typesByteArrayPtrWithinThread;
+		additionalTypesByteArrayPtr = additionalTypesByteArrayPtrWithinThread;
+		stringNamesByteArrayPtr = stringNamesByteArrayPtrWithinThread;
 		bool highPriority = false;
 		bool finishedWritingHighPriorityTags = false;
 		bool finishedWritingLowPriorityTags = false;
@@ -643,9 +635,9 @@ void writeOsmAndStructure_mapIndex_levels_block() {
 			}
 		}
 		sqlite3_finalize(res);
-		if ((typesByteArrayPtr - typesByteArrayGlobalPtr) > 0) mapData.set_types(reinterpret_cast<const char*>(typesByteArrayGlobalPtr), (typesByteArrayPtr - typesByteArrayGlobalPtr));
-		if ((additionalTypesByteArrayPtr - additionalTypesByteArrayGlobalPtr) > 0) mapData.set_additionaltypes(reinterpret_cast<const char*>(additionalTypesByteArrayGlobalPtr), (additionalTypesByteArrayPtr - additionalTypesByteArrayGlobalPtr));
-		if ((stringNamesByteArrayPtr - stringNamesByteArrayGlobalPtr) > 0) mapData.set_stringnames(reinterpret_cast<const char*>(stringNamesByteArrayGlobalPtr), (stringNamesByteArrayPtr - stringNamesByteArrayGlobalPtr));
+		if ((typesByteArrayPtr - typesByteArrayPtrWithinThread) > 0) mapData.set_types(reinterpret_cast<const char*>(typesByteArrayPtrWithinThread), (typesByteArrayPtr - typesByteArrayPtrWithinThread));
+		if ((additionalTypesByteArrayPtr - additionalTypesByteArrayPtrWithinThread) > 0) mapData.set_additionaltypes(reinterpret_cast<const char*>(additionalTypesByteArrayPtrWithinThread), (additionalTypesByteArrayPtr - additionalTypesByteArrayPtrWithinThread));
+		if ((stringNamesByteArrayPtr - stringNamesByteArrayPtrWithinThread) > 0) mapData.set_stringnames(reinterpret_cast<const char*>(stringNamesByteArrayPtrWithinThread), (stringNamesByteArrayPtr - stringNamesByteArrayPtrWithinThread));
 
 		//MapData.additionalTypes
 		//These are the low-priority machine-readable types
@@ -673,10 +665,10 @@ void writeOsmAndStructure_mapIndex_levels_block() {
 	mapData.Clear();
 	coordinatesByteLength = 0;
 	coordinatesCount = 0;
-	coordinatesByteArrayPtr = coordinatesByteArrayGlobalPtr;
-	typesByteArrayPtr = typesByteArrayGlobalPtr;
-	additionalTypesByteArrayPtr = additionalTypesByteArrayGlobalPtr;
-	stringNamesByteArrayPtr = stringNamesByteArrayGlobalPtr;
+	coordinatesByteArrayPtr = coordinatesByteArrayPtrWithinThread;
+	typesByteArrayPtr = typesByteArrayPtrWithinThread;
+	additionalTypesByteArrayPtr = additionalTypesByteArrayPtrWithinThread;
+	stringNamesByteArrayPtr = stringNamesByteArrayPtrWithinThread;
 	while ((rc = sqlite3_step(res)) == SQLITE_ROW) {
 		if (sqlite3_column_int64(res, 0) != nodeID) {
 			nodeIDIndex++;
@@ -685,10 +677,10 @@ void writeOsmAndStructure_mapIndex_levels_block() {
 			if (nodeCount < 1000 || (nodeIDIndex % 999 == 0)) cout << "\rWriting node " << (nodeIDIndex + 1) << "/" << nodeCount << " (" << ((nodeIDIndex + 1) * 100.0) / nodeCount << "%)";
 			//We're starting a new node so write the current one and clear the protobuf message
 			if (nodeIDIndex > 0) {
-				mapData.set_coordinates(reinterpret_cast<const char*>(coordinatesByteArrayGlobalPtr), (coordinatesByteArrayPtr - coordinatesByteArrayGlobalPtr));
-				mapData.set_types(reinterpret_cast<const char*>(typesByteArrayGlobalPtr), (typesByteArrayPtr - typesByteArrayGlobalPtr));
-				mapData.set_additionaltypes(reinterpret_cast<const char*>(additionalTypesByteArrayGlobalPtr), (additionalTypesByteArrayPtr - additionalTypesByteArrayGlobalPtr));
-				mapData.set_stringnames(reinterpret_cast<const char*>(stringNamesByteArrayGlobalPtr), (stringNamesByteArrayPtr - stringNamesByteArrayGlobalPtr));
+				mapData.set_coordinates(reinterpret_cast<const char*>(coordinatesByteArrayPtrWithinThread), (coordinatesByteArrayPtr - coordinatesByteArrayPtrWithinThread));
+				mapData.set_types(reinterpret_cast<const char*>(typesByteArrayPtrWithinThread), (typesByteArrayPtr - typesByteArrayPtrWithinThread));
+				mapData.set_additionaltypes(reinterpret_cast<const char*>(additionalTypesByteArrayPtrWithinThread), (additionalTypesByteArrayPtr - additionalTypesByteArrayPtrWithinThread));
+				mapData.set_stringnames(reinterpret_cast<const char*>(stringNamesByteArrayPtrWithinThread), (stringNamesByteArrayPtr - stringNamesByteArrayPtrWithinThread));
 				mapData.set_id((((int64_t)nodeID) - ((int64_t)medianUniqueID)) << 7);
 				mapDataBlockCos.WriteTag((OsmAnd::OBF::MapDataBlock::kDataObjectsFieldNumber << 3) | 2);
 				mapDataBlockCos.WriteVarint32(mapData.ByteSizeLong());
@@ -696,10 +688,10 @@ void writeOsmAndStructure_mapIndex_levels_block() {
 				mapData.Clear();
 				coordinatesByteLength = 0;
 				coordinatesCount = 0;
-				coordinatesByteArrayPtr = coordinatesByteArrayGlobalPtr;
-				typesByteArrayPtr = typesByteArrayGlobalPtr;
-				additionalTypesByteArrayPtr = additionalTypesByteArrayGlobalPtr;
-				stringNamesByteArrayPtr = stringNamesByteArrayGlobalPtr;
+				coordinatesByteArrayPtr = coordinatesByteArrayPtrWithinThread;
+				typesByteArrayPtr = typesByteArrayPtrWithinThread;
+				additionalTypesByteArrayPtr = additionalTypesByteArrayPtrWithinThread;
+				stringNamesByteArrayPtr = stringNamesByteArrayPtrWithinThread;
 			}
 
 			lat = sqlite3_column_double(res, 1);
@@ -720,7 +712,7 @@ void writeOsmAndStructure_mapIndex_levels_block() {
 			coordinatesByteArrayPtr = google::protobuf::io::CodedOutputStream::WriteVarint32ToArray(sint32, coordinatesByteArrayPtr);
 			
 			//MapData.coordinates
-			mapData.set_coordinates(reinterpret_cast<const char*>(coordinatesByteArrayGlobalPtr), (coordinatesByteArrayPtr - coordinatesByteArrayGlobalPtr));
+			mapData.set_coordinates(reinterpret_cast<const char*>(coordinatesByteArrayPtrWithinThread), (coordinatesByteArrayPtr - coordinatesByteArrayPtrWithinThread));
 		}
 
 		//Write the tags
@@ -748,11 +740,11 @@ void writeOsmAndStructure_mapIndex_levels_block() {
 				}
 		}
 	}
-	mapData.set_types(reinterpret_cast<const char*>(typesByteArrayGlobalPtr), (typesByteArrayPtr - typesByteArrayGlobalPtr));
-	mapData.set_additionaltypes(reinterpret_cast<const char*>(additionalTypesByteArrayGlobalPtr), (additionalTypesByteArrayPtr - additionalTypesByteArrayGlobalPtr));
-	mapData.set_stringnames(reinterpret_cast<const char*>(stringNamesByteArrayGlobalPtr), (stringNamesByteArrayPtr - stringNamesByteArrayGlobalPtr));
+	mapData.set_types(reinterpret_cast<const char*>(typesByteArrayPtrWithinThread), (typesByteArrayPtr - typesByteArrayPtrWithinThread));
+	mapData.set_additionaltypes(reinterpret_cast<const char*>(additionalTypesByteArrayPtrWithinThread), (additionalTypesByteArrayPtr - additionalTypesByteArrayPtrWithinThread));
+	mapData.set_stringnames(reinterpret_cast<const char*>(stringNamesByteArrayPtrWithinThread), (stringNamesByteArrayPtr - stringNamesByteArrayPtrWithinThread));
 	mapData.set_id((((int64_t)nodeID) - ((int64_t)medianUniqueID)) << 7);
-	mapData.set_coordinates(reinterpret_cast<const char*>(coordinatesByteArrayGlobalPtr), (coordinatesByteArrayPtr - coordinatesByteArrayGlobalPtr));
+	mapData.set_coordinates(reinterpret_cast<const char*>(coordinatesByteArrayPtrWithinThread), (coordinatesByteArrayPtr - coordinatesByteArrayPtrWithinThread));
 	mapDataBlockCos.WriteTag((OsmAnd::OBF::MapDataBlock::kDataObjectsFieldNumber << 3) | 2);
 	mapDataBlockCos.WriteVarint32(mapData.ByteSizeLong());
 	mapData.SerializeToCodedStream(&mapDataBlockCos);

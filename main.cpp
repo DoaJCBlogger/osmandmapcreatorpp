@@ -40,6 +40,7 @@ double int32ToLatitude(uint64_t in, uint32_t zoom);
 double int32ToLongitude(uint64_t in, uint32_t zoom);
 uint32_t getVarintRequiredBytes(uint64_t i);
 void printHelp();
+static inline int min3(int64_t a, int64_t b, int64_t c);
 
 #define FILE_COPY_BUFFER_SIZE (32 * 1048576) //This needs the parentheses or it will evaluate the numbers separately
 #define PI 3.1415926535
@@ -523,12 +524,10 @@ void writeOsmAndStructure_mapIndex_levels_block() {
 				firstNodeID = node_id;
 
 				//The delta is based on the top-left point of the bounding box
-				prevLatInt32 = latitudeToInt32(lat, 21);
-				deltaLat = prevLatInt32;
-				deltaLat -= overallBoundingRectangle.topInt32;
-				prevLonInt32 = longitudeToInt32(lon, 21);
-				deltaLon = prevLonInt32;
-				deltaLon -= overallBoundingRectangle.leftInt32;
+				deltaLat = ((latitudeToInt32(lat, 21) - overallBoundingRectangle.topInt32) >> 5) << 5;
+				prevLatInt32 = overallBoundingRectangle.topInt32 + deltaLat;
+				deltaLon = ((longitudeToInt32(lon, 21) - overallBoundingRectangle.leftInt32) >> 5) << 5;
+				prevLonInt32 = overallBoundingRectangle.leftInt32 + deltaLon;
 			} else {
 				//The delta is based on the previous node
 				//We have to handle the cumulative rounding error since the format right-shifts the value by 5 bits
@@ -538,12 +537,37 @@ void writeOsmAndStructure_mapIndex_levels_block() {
 				deltaLon = ((longitudeToInt32(lon, 21) - prevLonInt32) >> 5) << 5;
 				prevLonInt32 += deltaLon;
 			}
-			//If this is the last node in the way, add 32 (1 after right-shifting by 5) to the delta if there is at least 16 rounding error left
-			/*if (index_within_way == nodesWithinWay) {
-				if (latRoundingError >= 16) deltaLat += 32;
-				if (lonRoundingError >= 16) deltaLon += 32;
+			//If this is the last node in the way, see if adding or subtracting 32 makes the end node coordinates more accurate
+			if (index_within_way == nodesWithinWay) {
+				int64_t valueWithDeltaPlus32, valueWithDeltaMinus32, plus32Difference, minus32Difference, currentDifference, min3_value;
+				valueWithDeltaPlus32 = prevLatInt32 + 32;
+				valueWithDeltaMinus32 = prevLatInt32 - 32;
+				plus32Difference = latitudeToInt32(lat, 21) - valueWithDeltaPlus32;
+				minus32Difference = latitudeToInt32(lat, 21) - valueWithDeltaMinus32;
+				currentDifference = latitudeToInt32(lat, 21) - prevLatInt32;
+				min3_value = min3(plus32Difference, minus32Difference, currentDifference);
+				if (plus32Difference == min3_value) {
+					deltaLat += 32;
+				}
+				else if (minus32Difference == min3_value) {
+					deltaLat -= 32;
+				}
+				
+				valueWithDeltaPlus32 = prevLonInt32 + 32;
+				valueWithDeltaMinus32 = prevLonInt32 - 32;
+				plus32Difference = longitudeToInt32(lon, 21) - valueWithDeltaPlus32;
+				minus32Difference = longitudeToInt32(lon, 21) - valueWithDeltaMinus32;
+				currentDifference = longitudeToInt32(lon, 21) - prevLonInt32;
+				min3_value = min3(plus32Difference, minus32Difference, currentDifference);
+				if (plus32Difference == min3_value) {
+					deltaLon += 32;
+				}
+				else if (minus32Difference == min3_value) {
+					deltaLon -= 32;
+				}
+
 				isArea = firstNodeID == node_id;
-			}*/
+			}
 			//cout << endl << "deltaX=" << ((deltaLon >> 5) << 5) << ", deltaY=" << ((deltaLat >> 5) << 5);
 			//Write the delta values as sint32
 			deltaLat >>= 5;
@@ -879,4 +903,13 @@ uint32_t getVarintRequiredBytes(uint64_t i) {
 		return 9;
 	}
 	return 0;
+}
+
+//Copied from StackOverflow user Sudhanshu
+//https://stackoverflow.com/q/2039730
+static inline int min3(int64_t a, int64_t b, int64_t c) {
+	int64_t m = a;
+	if (m > b) m = b;
+	if (m > c) m = c;
+	return m;
 }

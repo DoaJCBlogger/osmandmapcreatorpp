@@ -5,7 +5,7 @@ OsmAndMapCreator++ is an unofficial utility that generates OsmAnd OBF maps from 
 
 #### How to use
 1. Download or generate an OSM PBF file. For example, you could use an extract from Geofabrik
-2. Run **pbf2sqlite.exe \[database file\] read \[PBF file\] index rtree addr graph** to convert it to an SQLite database
+2. Run **pbf2sqlite.exe \[database file\] read \[PBF file\] index rtree addr graph** to convert it to an SQLite database. The output should be around 18 times the size of the PBF file. My PBF file of the southeast US is 2.82 GiB and the vacuumed DB file is 51.96 GiB
 3. (Recommended) Run the VACUUM SQL command to optimize the database
 4. Run **osmandmapcreator++.exe** with "-i \[input file\]" and optionally "-o \[output file\]". You can also just drag a \*.db file onto the EXE
 

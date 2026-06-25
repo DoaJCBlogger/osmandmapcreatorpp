@@ -92,7 +92,7 @@ static uint64_t currentDiskUsage = 0;
 static sqlite3 *db;
 static sqlite3_stmt *res;
 int main(int argc, char** argv) {
-	cout << "OsmAndMapCreator++ v0.1" << endl;
+	cout << "OsmAndMapCreator++ v0.1.1" << endl;
 
 	uint64_t overallStartTime = GetSystemTimeAsUnixTime();
 

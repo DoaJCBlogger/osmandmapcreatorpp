@@ -876,22 +876,20 @@ static inline int32_t longitudeToInt32(double longitude, uint32_t zoom) {
 uint32_t getVarintRequiredBytes(uint64_t i) {
 	if (i <= 127) {
 		return 1;
-	} else if (i <= 0x7f) {
+	} else if (i <= 16383) {
 		return 2;
-	} else if (i <= 0x3fff) {
+	} else if (i <= 2097151) {
 		return 3;
-	} else if (i <= 0x1fffff) {
+	} else if (i <= 268435455) {
 		return 4;
-	} else if (i <= 0xfffffff) {
+	} else if (i <= 34359738367) {
 		return 5;
-	} else if (i <= 0x1FFFFFfffff) {
-		return 6;
 	} else if (i <= 0xFFFFFFFFFFff) {
-		return 7;
+		return 6;
 	} else if (i <= 0x7FFFFFFFFFFFff) {
-		return 8;
+		return 7;
 	} else if (i <= 0x3FFFFFFFFFFFFFff) {
-		return 9;
+		return 8;
 	}
 	return 0;
 }

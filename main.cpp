@@ -34,8 +34,8 @@ void writeMapEncodingRule(string tag, string value, uint32_t minZoom);
 uint64_t GetSystemTimeAsUnixTime();
 static inline int32_t latitudeToInt32(double latitude, uint32_t zoom);
 static inline int32_t longitudeToInt32(double longitude, uint32_t zoom);
-void writeOsmAndStructure_mapIndex_levels(unsigned char *coordinatesByteArrayPtrWithinThread, unsigned char *typesByteArrayPtrWithinThread, unsigned char *additionalTypesByteArrayPtrWithinThread, unsigned char *stringNamesByteArrayPtrWithinThread);
-void writeOsmAndStructure_mapIndex_levels_block(unsigned char *coordinatesByteArrayPtrWithinThread, unsigned char *typesByteArrayPtrWithinThread, unsigned char *additionalTypesByteArrayPtrWithinThread, unsigned char *stringNamesByteArrayPtrWithinThread);
+void writeOsmAndStructure_mapIndex_detailed_level_1x1(unsigned char *coordinatesByteArrayPtrWithinThread, unsigned char *typesByteArrayPtrWithinThread, unsigned char *additionalTypesByteArrayPtrWithinThread, unsigned char *stringNamesByteArrayPtrWithinThread);
+void writeOsmAndStructure_mapIndex_detailed_level_2x2(unsigned char *coordinatesByteArrayPtrWithinThread, unsigned char *typesByteArrayPtrWithinThread, unsigned char *additionalTypesByteArrayPtrWithinThread, unsigned char *stringNamesByteArrayPtrWithinThread);
 double int32ToLatitude(uint64_t in, uint32_t zoom);
 double int32ToLongitude(uint64_t in, uint32_t zoom);
 uint32_t getVarintRequiredBytes(uint64_t i);
@@ -46,10 +46,12 @@ static inline int min3(int64_t a, int64_t b, int64_t c);
 #define PI 3.1415926535
 unsigned char *fileCopyBuffer = nullptr;
 #define PROTOBUF_SERIALIZE_TEMP_BUFFER_SIZE 1048576
+//Multiples of 32 so this is 1024
+#define NODE_BLOCK_OVERLAP 32
 static const char* GET_KEYS_AND_VALUES_SORTED_QUERY = "SELECT key, value, (key in (%HUMAN_READABLE_WHITELIST%) or key like 'addr:%') as human_readable, COUNT(*) p, COUNT(*) OVER () AS total_rows FROM (SELECT key, value FROM node_tags WHERE %MACHINE_READABLE_BLACKLIST% UNION ALL SELECT key, value FROM way_tags WHERE %MACHINE_READABLE_BLACKLIST%) q1 GROUP BY concat(key, \"=\", value) ORDER BY p DESC;";
 static const char* GET_WAY_AND_NODE_KEYS_SORTED_QUERY_BLACKLIST = "select key, count(key) as p, way from (select q1.*, 1 as way from way_tags q1 union all select q2.*, 0 as way from node_tags q2) where key not like 'tiger%' and key not like 'source%' and key not like 'attribution%' and key not like 'nhd%' and key not like 'power%' and key not like 'created_by%' and key not like 'seamark%' and key not like 'gnis%' and key not like 'fid%' and key not like 'fixme%' and key not like 'roof%' group by key order by p desc;";
-static const char* QUERY_GET_UNIQUE_WAY_AND_NODE_TAG_VALUES_BLACKLIST = "select value, count(value) as p, way, count(*) over () from (select q1.*, 1 as way from way_tags q1 union all select q2.*, 0 as way from node_tags q2) where key not like 'tiger%' and key not like 'source%' and key not like 'attribution%' and key not like 'nhd%' and key not like 'power%' and key not like 'created_by%' and key not like 'seamark%' and key not like 'gnis%' and key not like 'fid%' and key not like 'fixme%' and key not like 'roof%' group by value order by p desc;";
-static const char* QUERY_GET_MEDIAN_UNIQUE_ID = "select * from (select *, count(*) over () as p from (select distinct way_id as id from way_tags union all select distinct node_id as id from nodes) order by id asc) limit 1 offset ((select count(distinct id)/2 as p from (select distinct way_id as id from way_tags union all select distinct node_id as id from nodes)));";
+static const char* QUERY_GET_UNIQUE_WAY_AND_NODE_TAG_VALUES_BLACKLIST = "select value, count(value) as p, way, count(*) over () from (select q1.*, 1 as way from way_tags q1 left join way_nodes q4 on q4.node_order=1 and q4.way_id=q1.way_id left join nodes q5 on q5.node_id=q4.node_id where q5.lat between ? and ? and q5.lon between ? and ? union all select q2.*, 0 as way from node_tags q2 left join nodes q3 on q3.node_id=q2.node_id where q3.lat between ? and ? and q3.lon between ? and ?) where key not like 'tiger%' and key not like 'source%' and key not like 'attribution%' and key not like 'nhd%' and key not like 'power%' and key not like 'created_by%' and key not like 'seamark%' and key not like 'gnis%' and key not like 'fid%' and key not like 'fixme%' and key not like 'roof%' group by value order by p desc;";
+static const char* QUERY_GET_MEDIAN_UNIQUE_ID = "select * from (select *, count(*) over () as p from (select distinct q1.way_id as id from way_tags q1 left join way_nodes q2 on q2.node_order=1 and q2.way_id=q1.way_id left join nodes q3 on q3.node_id=q2.node_id where q3.lat between ? and ? AND q3.lon between ? and ? union all select distinct node_id as id from nodes q4 where q4.lat between ? and ? AND q4.lon between ? and ?) order by id asc) limit 1 offset ((select count(distinct id)/2 as p from (select distinct q1.way_id as id from way_tags q1 left join way_nodes q2 on q2.node_order=1 and q2.way_id=q1.way_id left join nodes q3 on q3.node_id=q2.node_id where q3.lat between ? and ? AND q3.lon between ? and ? union all select distinct node_id as id from nodes q4 where q4.lat between ? and ? AND q4.lon between ? and ?)));";
 static const char* QUERY_GET_WAY_NODES = "select q1.*, lag(q1.lat, 1) over () as prevLat, lag(q1.lon, 1) over () as prevLon, row_number() over (partition by q1.way_id order by way_id asc, node_order asc) as index_within_way from ( select way_id, q1.node_id, node_order, lat, lon from way_nodes q1 left join nodes q2 on q1.node_id=q2.node_id order by way_id asc, node_order asc) q1 WHERE lat is not null AND lon is not null /*and way_id=1527655305*/;";
 static const char* QUERY_GET_WAY_TAGS = "select q1.key, q1.value, (case when q1.key in (%HIGH_PRIORITY_WHITELIST%) then 0 when key in (%HUMAN_READABLE_WHITELIST%) then 2 else 1 end) as tagType from way_tags q1 where %MACHINE_READABLE_BLACKLIST% %WAY_ID% group by key, value order by tagType asc, key asc, value asc;";
 static const char* QUERY_GET_NODE_TAGS_MACHINE_READABLE = "select concat(q1.key, '=', q1.value) as tag, (case when q1.key in (%HIGH_PRIORITY_WHITELIST%) then 1 else 0 end) as high_priority from node_tags q1 where %KEY_BLACKLIST% and node_id=%NODE_ID% group by key, value order by high_priority desc, key asc, value asc";
@@ -66,12 +68,40 @@ public:
 	double bottom = 0;
 	double right = 0;
 	double top = 0;
+	double width = 0;
+	double height = 0;
 	uint64_t leftInt32 = 0;
 	uint64_t rightInt32 = 0;
 	uint64_t topInt32 = 0;
-	uint64_t bottomInt32;
+	uint64_t bottomInt32 = 0;
+	uint64_t widthInt32 = 0;
+	uint64_t heightInt32 = 0;
+
+	void calculateDoubleValuesFromInt32() {
+		this->left = int32ToLongitude(this->leftInt32, 21);
+		this->right = int32ToLongitude(this->rightInt32, 21);
+		this->top = int32ToLatitude(this->topInt32, 21);
+		this->bottom = int32ToLatitude(this->bottomInt32, 21);
+		this->width = this->right - this->left;
+		this->height = this->top - this->bottom;
+		this->widthInt32 = this->rightInt32 - this->leftInt32;
+		this->heightInt32 = this->bottomInt32 - this->topInt32;
+	}
+
+	void calculateInt32ValuesFromDouble() {
+		this->leftInt32 = longitudeToInt32(this->left, 21);
+		this->rightInt32 = longitudeToInt32(this->right, 21);
+		this->topInt32 = latitudeToInt32(this->top, 21);
+		this->bottomInt32 = latitudeToInt32(this->bottom, 21);
+		this->width = this->right - this->left;
+		this->height = this->top - this->bottom;
+		this->widthInt32 = this->rightInt32 - this->leftInt32;
+		this->heightInt32 = this->bottomInt32 - this->topInt32;
+	}
 };
 static BoundingRectangle overallBoundingRectangle;
+
+void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRectangle *rectangle, sqlite3 *dbConnection, sqlite3_stmt *stmt, unsigned char *coordinatesByteArrayPtrWithinThread, unsigned char *typesByteArrayPtrWithinThread, unsigned char *additionalTypesByteArrayPtrWithinThread, unsigned char *stringNamesByteArrayPtrWithinThread);
 
 template <typename T>
 T swap_endian(T u) {
@@ -91,6 +121,17 @@ T swap_endian(T u) {
 static uint64_t currentDiskUsage = 0;
 static sqlite3 *db;
 static sqlite3_stmt *res;
+static string databaseFilename = "";
+
+struct SQLite3StatementDeleter {
+	void operator()(sqlite3_stmt* stmt) const {
+		if (stmt) {
+			sqlite3_finalize(stmt);
+			stmt = nullptr;
+		}
+	}
+};
+
 int main(int argc, char** argv) {
 	cout << "OsmAndMapCreator++ v0.1.1" << endl;
 
@@ -150,6 +191,7 @@ int main(int argc, char** argv) {
 	unique_ptr<unsigned char[]> stringNamesByteArrayTmpUniquePtr = make_unique<unsigned char[]>(1048576);
 	fileCopyBuffer = fileCopyBufferUniquePtr.get();
 
+	databaseFilename = inputFilename;
 	int rc = sqlite3_open_v2(inputFilename.c_str(), &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, NULL);
 	if (rc != SQLITE_OK) {
 		cout << endl << "Error opening database";
@@ -173,10 +215,7 @@ int main(int argc, char** argv) {
 		overallBoundingRectangle.bottom = sqlite3_column_double(res, 1);
 		overallBoundingRectangle.right = sqlite3_column_double(res, 2);
 		overallBoundingRectangle.top = sqlite3_column_double(res, 3);
-		overallBoundingRectangle.leftInt32 = longitudeToInt32(overallBoundingRectangle.left, 21);
-		overallBoundingRectangle.bottomInt32 = latitudeToInt32(overallBoundingRectangle.bottom, 21);
-		overallBoundingRectangle.rightInt32 = longitudeToInt32(overallBoundingRectangle.right, 21);
-		overallBoundingRectangle.topInt32 = latitudeToInt32(overallBoundingRectangle.top, 21);
+		overallBoundingRectangle.calculateInt32ValuesFromDouble();
 	}
 	else {
 		cout << endl << "Could not get the overall bounding rectangle";
@@ -258,7 +297,7 @@ uint64_t writeMapIndex(string name, uint32_t threadID, unsigned char *coordinate
 
 	//MapIndex.levels
 	mapIndexCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::kLevelsFieldNumber << 3) | 6);
-	writeOsmAndStructure_mapIndex_levels(coordinatesByteArrayPtrWithinThread, typesByteArrayPtrWithinThread, additionalTypesByteArrayPtrWithinThread, stringNamesByteArrayPtrWithinThread);
+	writeOsmAndStructure_mapIndex_detailed_level_2x2(coordinatesByteArrayPtrWithinThread, typesByteArrayPtrWithinThread, additionalTypesByteArrayPtrWithinThread, stringNamesByteArrayPtrWithinThread);
 	int64_t mapRootLevelSize = getFileSize(L"mapRootLevel");
 	writeOBFVarint32or64BE(mapIndexCos, mapRootLevelSize);
 	//cout << endl << "mapRootLevel size = " << mapRootLevelSize;
@@ -337,7 +376,7 @@ void writeOsmAndStructure_mapIndex_rules(google::protobuf::io::CodedOutputStream
 }
 
 //OsmAndMapIndex.MapRootLevel
-void writeOsmAndStructure_mapIndex_levels(unsigned char *coordinatesByteArrayPtrWithinThread, unsigned char *typesByteArrayPtrWithinThread, unsigned char *additionalTypesByteArrayPtrWithinThread, unsigned char *stringNamesByteArrayPtrWithinThread) {
+void writeOsmAndStructure_mapIndex_detailed_level_1x1(unsigned char *coordinatesByteArrayPtrWithinThread, unsigned char *typesByteArrayPtrWithinThread, unsigned char *additionalTypesByteArrayPtrWithinThread, unsigned char *stringNamesByteArrayPtrWithinThread) {
 	remove("mapRootLevel");
 	ofstream mapRootLevelTemp("mapRootLevel", ios::binary);
 	google::protobuf::io::OstreamOutputStream mapRootLevelTempOstream(&mapRootLevelTemp);
@@ -390,22 +429,181 @@ void writeOsmAndStructure_mapIndex_levels(unsigned char *coordinatesByteArrayPtr
 
 	//MapRootLevel.blocks
 	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kBlocksFieldNumber << 3) | 2);
-	writeOsmAndStructure_mapIndex_levels_block(coordinatesByteArrayPtrWithinThread, typesByteArrayPtrWithinThread, additionalTypesByteArrayPtrWithinThread, stringNamesByteArrayPtrWithinThread);
+	writeOsmAndStructure_mapIndex_levels_block("mapDataBlock", &overallBoundingRectangle, db, res, coordinatesByteArrayPtrWithinThread, typesByteArrayPtrWithinThread, additionalTypesByteArrayPtrWithinThread, stringNamesByteArrayPtrWithinThread);
 	uint64_t mapDataBlockSize = getFileSize(L"mapDataBlock");
 	mapRootLevelTempCos.WriteVarint32(mapDataBlockSize);
 	copyRawFileIntoCodedOutputStream(mapRootLevelTempCos, "mapDataBlock", mapDataBlockSize);
 }
 
-void writeOsmAndStructure_mapIndex_levels_block(unsigned char *coordinatesByteArrayPtrWithinThread, unsigned char *typesByteArrayPtrWithinThread, unsigned char *additionalTypesByteArrayPtrWithinThread, unsigned char *stringNamesByteArrayPtrWithinThread) {
-	remove("mapDataBlock");
-	ofstream mapDataBlockTemp("mapDataBlock", ios::binary);
+//OsmAndMapIndex.MapRootLevel
+void writeOsmAndStructure_mapIndex_detailed_level_2x2(unsigned char *coordinatesByteArrayPtrWithinThread, unsigned char *typesByteArrayPtrWithinThread, unsigned char *additionalTypesByteArrayPtrWithinThread, unsigned char *stringNamesByteArrayPtrWithinThread) {
+	remove("mapRootLevel");
+	ofstream mapRootLevelTemp("mapRootLevel", ios::binary);
+	google::protobuf::io::OstreamOutputStream mapRootLevelTempOstream(&mapRootLevelTemp);
+	google::protobuf::io::CodedOutputStream mapRootLevelTempCos(&mapRootLevelTempOstream);
+
+	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kMaxZoomFieldNumber << 3));
+	mapRootLevelTempCos.WriteVarint32(22);
+	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kMinZoomFieldNumber << 3));
+	mapRootLevelTempCos.WriteVarint32(15);
+	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kLeftFieldNumber << 3));
+	mapRootLevelTempCos.WriteVarint32(overallBoundingRectangle.leftInt32);
+	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kRightFieldNumber << 3));
+	mapRootLevelTempCos.WriteVarint32(overallBoundingRectangle.rightInt32);
+	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kTopFieldNumber << 3));
+	mapRootLevelTempCos.WriteVarint32(overallBoundingRectangle.topInt32);
+	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kBottomFieldNumber << 3));
+	mapRootLevelTempCos.WriteVarint32(overallBoundingRectangle.bottomInt32);
+
+	//MapRootLevel.boxes
+
+	//Split the overall bounding box into 4 parts (2x2)
+	BoundingRectangle r0, r1, r2, r3;
+	//r0 - top left
+	r0.leftInt32 = overallBoundingRectangle.leftInt32;
+	r0.rightInt32 = overallBoundingRectangle.leftInt32 + (overallBoundingRectangle.widthInt32 >> 1) + (NODE_BLOCK_OVERLAP << 5);
+	r0.topInt32 = overallBoundingRectangle.topInt32;
+	r0.bottomInt32 = overallBoundingRectangle.bottomInt32 - ((overallBoundingRectangle.heightInt32 >> 1) + (NODE_BLOCK_OVERLAP << 5));
+	r0.calculateDoubleValuesFromInt32();
+
+	//r1 - top right
+	r1.leftInt32 = overallBoundingRectangle.leftInt32 + (overallBoundingRectangle.widthInt32 >> 1) - (NODE_BLOCK_OVERLAP << 5);
+	r1.rightInt32 = overallBoundingRectangle.rightInt32;
+	r1.topInt32 = overallBoundingRectangle.topInt32;
+	r1.bottomInt32 = overallBoundingRectangle.bottomInt32 - ((overallBoundingRectangle.heightInt32 >> 1) + (NODE_BLOCK_OVERLAP << 5));
+	r1.calculateDoubleValuesFromInt32();
+
+	//r0 - bottom left
+	r2.leftInt32 = overallBoundingRectangle.leftInt32;
+	r2.rightInt32 = overallBoundingRectangle.leftInt32 + (overallBoundingRectangle.widthInt32 >> 1) + (NODE_BLOCK_OVERLAP << 5);
+	r2.topInt32 = overallBoundingRectangle.bottomInt32 - ((overallBoundingRectangle.heightInt32 >> 1) - (NODE_BLOCK_OVERLAP << 5));
+	r2.bottomInt32 = overallBoundingRectangle.bottomInt32;
+	r2.calculateDoubleValuesFromInt32();
+
+	//r1 - bottom right
+	r3.leftInt32 = overallBoundingRectangle.leftInt32 + (overallBoundingRectangle.widthInt32 >> 1) - (NODE_BLOCK_OVERLAP << 5);
+	r3.rightInt32 = overallBoundingRectangle.rightInt32;
+	r3.topInt32 = overallBoundingRectangle.bottomInt32 - ((overallBoundingRectangle.heightInt32 >> 1) - (NODE_BLOCK_OVERLAP << 5));
+	r3.bottomInt32 = overallBoundingRectangle.bottomInt32;
+	r3.calculateDoubleValuesFromInt32();
+
+	//For some reason, the box has to be built in an EXACT way that includes shiftToMapData with a wiretype of 6
+	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kBoxesFieldNumber << 3) | 6);
+	uint32_t boxSize = 0;
+	boxSize += 4;
+	boxSize++;
+	boxSize += getVarintRequiredBytes(0);
+	boxSize++;
+	boxSize += getVarintRequiredBytes(0);
+	boxSize++;
+	boxSize += getVarintRequiredBytes(0);
+	boxSize++;
+	boxSize += getVarintRequiredBytes(0);
+	boxSize++;
+	boxSize = swap_endian(boxSize);
+	mapRootLevelTempCos.WriteRaw(&boxSize, 4);
+	boxSize = swap_endian(boxSize);
+	mapRootLevelTempCos.WriteTag(OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kLeftFieldNumber << 3);
+	mapRootLevelTempCos.WriteVarint32(0);
+	mapRootLevelTempCos.WriteTag(OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kRightFieldNumber << 3);
+	mapRootLevelTempCos.WriteVarint32(0);
+	mapRootLevelTempCos.WriteTag(OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kTopFieldNumber << 3);
+	mapRootLevelTempCos.WriteVarint32(0);
+	mapRootLevelTempCos.WriteTag(OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kBottomFieldNumber << 3);
+	mapRootLevelTempCos.WriteVarint32(0);
+	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kShiftToMapDataFieldNumber << 3) | 6);
+	//cout << endl << "boxSize=" << boxSize;
+	boxSize++;
+	boxSize = swap_endian(boxSize);
+	mapRootLevelTempCos.WriteRaw(&boxSize, 4);
+
+
+
+	//MapRootLevel.blocks
+	//We need to save the offsets to these blocks
+	sqlite3_stmt *block0Stmt, *block1Stmt, *block2Stmt, *block3Stmt;
+	block0Stmt = nullptr;
+	block1Stmt = nullptr;
+	block2Stmt = nullptr;
+	block3Stmt = nullptr;
+	unique_ptr<sqlite3_stmt, SQLite3StatementDeleter> block0StmtUniquePtr(block0Stmt);
+	unique_ptr<sqlite3_stmt, SQLite3StatementDeleter> block1StmtUniquePtr(block1Stmt);
+	unique_ptr<sqlite3_stmt, SQLite3StatementDeleter> block2StmtUniquePtr(block2Stmt);
+	unique_ptr<sqlite3_stmt, SQLite3StatementDeleter> block3StmtUniquePtr(block3Stmt);
+	sqlite3 *block0DBConnection, *block1DBConnection, *block2DBConnection, *block3DBConnection;
+	sqlite3_open_v2(databaseFilename.c_str(), &block0DBConnection, SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, NULL);
+	sqlite3_open_v2(databaseFilename.c_str(), &block1DBConnection, SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, NULL);
+	sqlite3_open_v2(databaseFilename.c_str(), &block2DBConnection, SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, NULL);
+	sqlite3_open_v2(databaseFilename.c_str(), &block3DBConnection, SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, NULL);
+	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kBlocksFieldNumber << 3) | 2);
+	writeOsmAndStructure_mapIndex_levels_block("mapDataBlock0.tmp", &r0, block0DBConnection, block0Stmt, coordinatesByteArrayPtrWithinThread, typesByteArrayPtrWithinThread, additionalTypesByteArrayPtrWithinThread, stringNamesByteArrayPtrWithinThread);
+	uint64_t block0Size = getFileSize(L"mapDataBlock0.tmp");
+	mapRootLevelTempCos.WriteVarint32(block0Size);
+	copyRawFileIntoCodedOutputStream(mapRootLevelTempCos, "mapDataBlock0.tmp", block0Size);
+	//remove("mapDataBlock0.tmp");
+
+	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kBlocksFieldNumber << 3) | 2);
+	writeOsmAndStructure_mapIndex_levels_block("mapDataBlock1.tmp", &r1, block1DBConnection, block1Stmt, coordinatesByteArrayPtrWithinThread, typesByteArrayPtrWithinThread, additionalTypesByteArrayPtrWithinThread, stringNamesByteArrayPtrWithinThread);
+	uint64_t block1Size = getFileSize(L"mapDataBlock1.tmp");
+	mapRootLevelTempCos.WriteVarint32(block1Size);
+	copyRawFileIntoCodedOutputStream(mapRootLevelTempCos, "mapDataBlock1.tmp", block1Size);
+	//remove("mapDataBlock1.tmp");
+
+	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kBlocksFieldNumber << 3) | 2);
+	writeOsmAndStructure_mapIndex_levels_block("mapDataBlock2.tmp", &r2, block2DBConnection, block2Stmt, coordinatesByteArrayPtrWithinThread, typesByteArrayPtrWithinThread, additionalTypesByteArrayPtrWithinThread, stringNamesByteArrayPtrWithinThread);
+	uint64_t block2Size = getFileSize(L"mapDataBlock2.tmp");
+	mapRootLevelTempCos.WriteVarint32(block2Size);
+	copyRawFileIntoCodedOutputStream(mapRootLevelTempCos, "mapDataBlock2.tmp", block2Size);
+	//remove("mapDataBlock2.tmp");
+
+	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kBlocksFieldNumber << 3) | 2);
+	writeOsmAndStructure_mapIndex_levels_block("mapDataBlock3.tmp", &r3, block3DBConnection, block3Stmt, coordinatesByteArrayPtrWithinThread, typesByteArrayPtrWithinThread, additionalTypesByteArrayPtrWithinThread, stringNamesByteArrayPtrWithinThread);
+	uint64_t block3Size = getFileSize(L"mapDataBlock3.tmp");
+	mapRootLevelTempCos.WriteVarint32(block3Size);
+	copyRawFileIntoCodedOutputStream(mapRootLevelTempCos, "mapDataBlock3.tmp", block3Size);
+	//remove("mapDataBlock3.tmp");
+
+	if (block0Stmt != nullptr) {
+		sqlite3_finalize(block0Stmt);
+		block0Stmt = nullptr;
+	}
+	if (block1Stmt != nullptr) {
+		sqlite3_finalize(block1Stmt);
+		block1Stmt = nullptr;
+	}
+	if (block2Stmt != nullptr) {
+		sqlite3_finalize(block2Stmt);
+		block2Stmt = nullptr;
+	}
+	if (block3Stmt != nullptr) {
+		sqlite3_finalize(block3Stmt);
+		block3Stmt = nullptr;
+	}
+	sqlite3_close(block0DBConnection);
+	sqlite3_close(block1DBConnection);
+	sqlite3_close(block2DBConnection);
+	sqlite3_close(block3DBConnection);
+}
+
+void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRectangle *rectangle, sqlite3 *dbConnection, sqlite3_stmt *stmt, unsigned char *coordinatesByteArrayPtrWithinThread, unsigned char *typesByteArrayPtrWithinThread, unsigned char *additionalTypesByteArrayPtrWithinThread, unsigned char *stringNamesByteArrayPtrWithinThread) {
+	remove(tempFilename.c_str());
+	ofstream mapDataBlockTemp(tempFilename, ios::binary);
 	google::protobuf::io::OstreamOutputStream mapDataBlockTempOstream(&mapDataBlockTemp);
 	google::protobuf::io::CodedOutputStream mapDataBlockCos(&mapDataBlockTempOstream);
 
 	//Get all of the way and node tag values, sorted by frequency descending, and load them in memory
 	//Even for the entire southeast US, that is only around 70 MB so it should be safe to store it in an unordered_map
-	//This might help wuth cache locality on the reader, and definitely minimizes the sizes of the varint indices
-	int rc = sqlite3_prepare_v2(db, QUERY_GET_UNIQUE_WAY_AND_NODE_TAG_VALUES_BLACKLIST, -1, &res, 0);
+	//This might help with cache locality on the reader, and definitely minimizes the sizes of the varint indices
+	int rc = sqlite3_prepare_v2(dbConnection, QUERY_GET_UNIQUE_WAY_AND_NODE_TAG_VALUES_BLACKLIST, -1, &stmt, 0);
+	sqlite3_bind_double(stmt, 1, rectangle->bottom);
+	sqlite3_bind_double(stmt, 2, rectangle->top);
+	sqlite3_bind_double(stmt, 3, rectangle->left);
+	sqlite3_bind_double(stmt, 4, rectangle->right);
+	sqlite3_bind_double(stmt, 5, rectangle->bottom);
+	sqlite3_bind_double(stmt, 6, rectangle->top);
+	sqlite3_bind_double(stmt, 7, rectangle->left);
+	sqlite3_bind_double(stmt, 8, rectangle->right);
+	cout << endl << "Bottom,top,left,right=" << rectangle->bottom << ", " << rectangle->top << ", " << rectangle->left << ", " << rectangle->right << endl;
 	if (rc != SQLITE_OK) {
 		cout << endl << "Error while creating the MapDataBlock unique values prepared statement";
 	}
@@ -418,17 +616,17 @@ void writeOsmAndStructure_mapIndex_levels_block(unsigned char *coordinatesByteAr
 	
 	//We need the StringTable file objects to go out of scope so they get closed properly, and it's more efficient to write that now while we're loading the values into memory
 	{
-		remove("mapDataBlockStringTable");
-		ofstream mapDataBlockStringTableTemp("mapDataBlockStringTable", ios::binary);
+		remove(string("mapDataBlockStringTable_" + tempFilename).c_str());
+		ofstream mapDataBlockStringTableTemp(string("mapDataBlockStringTable_" + tempFilename).c_str(), ios::binary);
 		google::protobuf::io::OstreamOutputStream mapDataBlockStringTableOstream(&mapDataBlockStringTableTemp);
 		google::protobuf::io::CodedOutputStream mapDataBlockStringTableCos(&mapDataBlockStringTableOstream);
-		while ((rc = sqlite3_step(res)) == SQLITE_ROW) {
+		while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
 			if (i == 0) {
-				uniqueValueCount = sqlite3_column_int(res, 3);
+				uniqueValueCount = sqlite3_column_int(stmt, 3);
 				stringTable.reserve(uniqueValueCount);
 				cout << endl << "Found " << uniqueValueCount << " unique human-readable tag value" << (uniqueValueCount != 1 ? "s" : "");
 			}
-			value = string((char*)sqlite3_column_text(res, 0));
+			value = string((char*)sqlite3_column_text(stmt, 0));
 			mapDataBlockStringTableCos.WriteTag((OsmAnd::OBF::StringTable::kSFieldNumber << 3) | 2);
 			mapDataBlockStringTableCos.WriteVarint32(value.length());
 			mapDataBlockStringTableCos.WriteString(value);
@@ -438,18 +636,36 @@ void writeOsmAndStructure_mapIndex_levels_block(unsigned char *coordinatesByteAr
 			i++;
 		}
 	}
-	sqlite3_finalize(res);
+	sqlite3_finalize(stmt);
+	stmt = nullptr;
 	cout << " (" << uniqueValuesByteCount << " bytes)";
 	
 	//Get the median of the unique ID's from way_tags (faster than way_nodes) and nodes so the delta ID values will be as small as possible
 	//We want the median of the unique values because the median of all the values will skew toward ways with more nodes
-	rc = sqlite3_prepare_v2(db, QUERY_GET_MEDIAN_UNIQUE_ID, -1, &res, 0);
+	rc = sqlite3_prepare_v2(dbConnection, QUERY_GET_MEDIAN_UNIQUE_ID, -1, &stmt, 0);
+	sqlite3_bind_double(stmt, 1, rectangle->bottom);
+	sqlite3_bind_double(stmt, 2, rectangle->top);
+	sqlite3_bind_double(stmt, 3, rectangle->left);
+	sqlite3_bind_double(stmt, 4, rectangle->right);
+	sqlite3_bind_double(stmt, 5, rectangle->bottom);
+	sqlite3_bind_double(stmt, 6, rectangle->top);
+	sqlite3_bind_double(stmt, 7, rectangle->left);
+	sqlite3_bind_double(stmt, 8, rectangle->right);
+	sqlite3_bind_double(stmt, 9, rectangle->bottom);
+	sqlite3_bind_double(stmt, 10, rectangle->top);
+	sqlite3_bind_double(stmt, 11, rectangle->left);
+	sqlite3_bind_double(stmt, 12, rectangle->right);
+	sqlite3_bind_double(stmt, 13, rectangle->bottom);
+	sqlite3_bind_double(stmt, 14, rectangle->top);
+	sqlite3_bind_double(stmt, 15, rectangle->left);
+	sqlite3_bind_double(stmt, 16, rectangle->right);
 	if (rc != SQLITE_OK) {
 		cout << endl << "Error while getting the median unique ID";
 	}
-	sqlite3_step(res);
-	uint64_t medianUniqueID = sqlite3_column_int64(res, 0);
-	sqlite3_finalize(res);
+	sqlite3_step(stmt);
+	uint64_t medianUniqueID = sqlite3_column_int64(stmt, 0);
+	sqlite3_finalize(stmt);
+	stmt = nullptr;
 	cout << endl << "Median unique ID: " << medianUniqueID;
 	
 	//MapDataBlock.baseId
@@ -457,15 +673,21 @@ void writeOsmAndStructure_mapIndex_levels_block(unsigned char *coordinatesByteAr
 	mapDataBlockCos.WriteVarint64((medianUniqueID << 7) /*(| 3*/);
 
 	//Get a list of all the way and node ID's
-	rc = sqlite3_prepare_v2(db, "select q1.*, count(*) over () from (select distinct way_id from way_tags) q1 order by way_id asc", -1, &res, 0);
+	//Use the first node to see if the way should be included in the current block
+	rc = sqlite3_prepare_v2(dbConnection, "select q1.*, count(*) over () from (select distinct q1.way_id from way_tags q1 left join way_nodes q2 on q2.node_order=1 and q2.way_id=q1.way_id left join nodes q3 on q3.node_id=q2.node_id where q3.lat between ? and ? and q3.lon between ? and ?) q1 order by way_id asc", -1, &stmt, 0);
+	sqlite3_bind_double(stmt, 1, rectangle->bottom);
+	sqlite3_bind_double(stmt, 2, rectangle->top);
+	sqlite3_bind_double(stmt, 3, rectangle->left);
+	sqlite3_bind_double(stmt, 4, rectangle->right);
 	vector<uint64_t> wayIDs;
 	i = 0;
-	while ((rc = sqlite3_step(res)) == SQLITE_ROW) {
-		if (i == 0) wayIDs.reserve(sqlite3_column_int64(res, 1));
-		wayIDs.emplace_back((uint64_t)sqlite3_column_int64(res, 0));
+	while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+		if (i == 0) wayIDs.reserve(sqlite3_column_int64(stmt, 1));
+		wayIDs.emplace_back((uint64_t)sqlite3_column_int64(stmt, 0));
 		i++;
 	}
-	sqlite3_finalize(res);
+	sqlite3_finalize(stmt);
+	stmt = nullptr;
 	
 	//MapDataBlock.dataObjects
 	OsmAnd::OBF::MapData mapData;
@@ -492,7 +714,7 @@ void writeOsmAndStructure_mapIndex_levels_block(unsigned char *coordinatesByteAr
 		}
 		string queryGetWayNodes = "select q1.*, lag(q1.lat, 1) over () as prevLat, lag(q1.lon, 1) over () as prevLon, row_number() over (partition by q1.way_id order by way_id asc, node_order asc) as index_within_way, count(*) over () as total_nodes from (select way_id, q1.node_id, node_order, lat, lon from way_nodes q1 left join nodes q2 on q1.node_id=q2.node_id) q1 WHERE lat is not null AND lon is not null and way_id=%WAY_ID% order by way_id asc, node_order asc";
 		queryGetWayNodes.replace(queryGetWayNodes.find("%WAY_ID%"), 8, to_string(wayID));
-		rc = sqlite3_prepare_v2(db, queryGetWayNodes.c_str(), -1, &res, 0);
+		rc = sqlite3_prepare_v2(dbConnection, queryGetWayNodes.c_str(), -1, &stmt, 0);
 		coordinatesByteLength = 0;
 		coordinatesCount = 0;
 		coordinatesByteArrayPtr = coordinatesByteArrayPtrWithinThread;
@@ -501,25 +723,25 @@ void writeOsmAndStructure_mapIndex_levels_block(unsigned char *coordinatesByteAr
 		latRoundingError = 0;
 		lonRoundingError = 0;
 		isArea = false;
-		while ((rc = sqlite3_step(res)) == SQLITE_ROW) {
-			way_id = sqlite3_column_int64(res, 0);
-			node_id = sqlite3_column_int64(res, 1);
-			node_order = sqlite3_column_int64(res, 2);
-			lat = sqlite3_column_double(res, 3);
-			lon = sqlite3_column_double(res, 4);
-			prevLat = sqlite3_column_double(res, 5);
-			prevLon = sqlite3_column_double(res, 6);
-			index_within_way = sqlite3_column_int64(res, 7);
+		while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+			way_id = sqlite3_column_int64(stmt, 0);
+			node_id = sqlite3_column_int64(stmt, 1);
+			node_order = sqlite3_column_int64(stmt, 2);
+			lat = sqlite3_column_double(stmt, 3);
+			lon = sqlite3_column_double(stmt, 4);
+			prevLat = sqlite3_column_double(stmt, 5);
+			prevLon = sqlite3_column_double(stmt, 6);
+			index_within_way = sqlite3_column_int64(stmt, 7);
 
 			if (index_within_way == 1) {
-				nodesWithinWay = sqlite3_column_int64(res, 8);
+				nodesWithinWay = sqlite3_column_int64(stmt, 8);
 				firstNodeID = node_id;
 
 				//The delta is based on the top-left point of the bounding box
-				deltaLat = latitudeToInt32(lat, 21) - overallBoundingRectangle.topInt32;
-				prevLatInt32 = overallBoundingRectangle.topInt32 + deltaLat;
-				deltaLon = longitudeToInt32(lon, 21) - overallBoundingRectangle.leftInt32;
-				prevLonInt32 = overallBoundingRectangle.leftInt32 + deltaLon;
+				deltaLat = latitudeToInt32(lat, 21) - rectangle->topInt32;
+				prevLatInt32 = rectangle->topInt32 + deltaLat;
+				deltaLon = longitudeToInt32(lon, 21) - rectangle->leftInt32;
+				prevLonInt32 = rectangle->leftInt32 + deltaLon;
 			} else {
 				//The delta is based on the previous node
 				//Keep track of all the previous deltas by adding the rounded ones so we can base the current one on that instead of the accurate values
@@ -573,7 +795,8 @@ void writeOsmAndStructure_mapIndex_levels_block(unsigned char *coordinatesByteAr
 			if (!isArea) coordinatesByteArrayPtr = google::protobuf::io::CodedOutputStream::WriteVarint32ToArray(sint32, coordinatesByteArrayPtr);
 			//coordinatesCount++;
 		}
-		sqlite3_finalize(res);
+		sqlite3_finalize(stmt);
+		stmt = nullptr;
 
 		//MapData.coordinates
 		if (isArea) {
@@ -590,7 +813,7 @@ void writeOsmAndStructure_mapIndex_levels_block(unsigned char *coordinatesByteAr
 		wayTagsQuery.replace(wayTagsQuery.find("%MACHINE_READABLE_BLACKLIST%"), 28, TAG_KEYS_MACHINE_READABLE_BLACKLIST);
 		wayTagsQuery.replace(wayTagsQuery.find("%WAY_ID%"), 8, string("and way_id=" + to_string(way_id)));
 		//cout << endl << wayTagsQuery;
-		rc = sqlite3_prepare_v2(db, wayTagsQuery.c_str(), -1, &res, 0);
+		rc = sqlite3_prepare_v2(dbConnection, wayTagsQuery.c_str(), -1, &stmt, 0);
 		//cout << endl << "Way tags query " << wayTagsQuery;
 		//string tag = "";
 		string key = "";
@@ -601,13 +824,13 @@ void writeOsmAndStructure_mapIndex_levels_block(unsigned char *coordinatesByteAr
 		bool highPriority = false;
 		bool finishedWritingHighPriorityTags = false;
 		bool finishedWritingLowPriorityTags = false;
-		while ((rc = sqlite3_step(res)) == SQLITE_ROW) {
+		while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
 			//tag = (char*)sqlite3_column_text(res, 0);
-			key = (char*)sqlite3_column_text(res, 0);
-			value = (char*)sqlite3_column_text(res, 1);
+			key = (char*)sqlite3_column_text(stmt, 0);
+			value = (char*)sqlite3_column_text(stmt, 1);
 			//cout << endl << "tag=\"" << tag << "\"";
 
-			switch(sqlite3_column_int64(res, 2) /* tagType */) {
+			switch(sqlite3_column_int64(stmt, 2) /* tagType */) {
 				case 0: //high_priority machine-readable tags for the "types" array
 					{
 						//MapData.types
@@ -634,7 +857,8 @@ void writeOsmAndStructure_mapIndex_levels_block(unsigned char *coordinatesByteAr
 					}
 			}
 		}
-		sqlite3_finalize(res);
+		sqlite3_finalize(stmt);
+		stmt = nullptr;
 		if ((typesByteArrayPtr - typesByteArrayPtrWithinThread) > 0) mapData.set_types(reinterpret_cast<const char*>(typesByteArrayPtrWithinThread), (typesByteArrayPtr - typesByteArrayPtrWithinThread));
 		if ((additionalTypesByteArrayPtr - additionalTypesByteArrayPtrWithinThread) > 0) mapData.set_additionaltypes(reinterpret_cast<const char*>(additionalTypesByteArrayPtrWithinThread), (additionalTypesByteArrayPtr - additionalTypesByteArrayPtrWithinThread));
 		if ((stringNamesByteArrayPtr - stringNamesByteArrayPtrWithinThread) > 0) mapData.set_stringnames(reinterpret_cast<const char*>(stringNamesByteArrayPtrWithinThread), (stringNamesByteArrayPtr - stringNamesByteArrayPtrWithinThread));
@@ -659,9 +883,13 @@ void writeOsmAndStructure_mapIndex_levels_block(unsigned char *coordinatesByteAr
 	nodeIDIndex--; //This is so it's 0 the first time it's incremented
 	uint64_t nodeID = 0;
 	uint64_t nodeCount = 0;
-	string queryGetOnlyNodesWithTags = "select q1.node_id, q2.lat, q2.lon, q1.key, q1.value, (case when q1.key in (" + TAG_KEYS_HIGH_PRIORITY_WHITELIST + ") then 0 when key in (" + TAG_KEYS_HUMAN_READABLE_WHITELIST + ") then 2 else 1 end) as tagType, (select count(distinct node_id) from node_tags) as nodeIDCount from node_tags q1 left join nodes q2 on q2.node_id=q1.node_id /*where " + TAG_KEYS_BLACKLIST + "*/ order by q1.node_id asc, tagType asc, key asc, value asc;";
+	string queryGetOnlyNodesWithTags = "select q1.node_id, q2.lat, q2.lon, q1.key, q1.value, (case when q1.key in (" + TAG_KEYS_HIGH_PRIORITY_WHITELIST + ") then 0 when key in (" + TAG_KEYS_HUMAN_READABLE_WHITELIST + ") then 2 else 1 end) as tagType, (select count(distinct node_id) from node_tags) as nodeIDCount from node_tags q1 left join nodes q2 on q2.node_id=q1.node_id where /*" + TAG_KEYS_BLACKLIST + "*/ lat between ? and ? and lon between ? and ? order by q1.node_id asc, tagType asc, key asc, value asc;";
 	//cout << endl << queryGetOnlyNodesWithTags;
-	rc = sqlite3_prepare_v2(db, queryGetOnlyNodesWithTags.c_str(), -1, &res, 0);
+	rc = sqlite3_prepare_v2(dbConnection, queryGetOnlyNodesWithTags.c_str(), -1, &stmt, 0);
+	sqlite3_bind_double(stmt, 1, rectangle->bottom);
+	sqlite3_bind_double(stmt, 2, rectangle->top);
+	sqlite3_bind_double(stmt, 3, rectangle->left);
+	sqlite3_bind_double(stmt, 4, rectangle->right);
 	mapData.Clear();
 	coordinatesByteLength = 0;
 	coordinatesCount = 0;
@@ -669,11 +897,11 @@ void writeOsmAndStructure_mapIndex_levels_block(unsigned char *coordinatesByteAr
 	typesByteArrayPtr = typesByteArrayPtrWithinThread;
 	additionalTypesByteArrayPtr = additionalTypesByteArrayPtrWithinThread;
 	stringNamesByteArrayPtr = stringNamesByteArrayPtrWithinThread;
-	while ((rc = sqlite3_step(res)) == SQLITE_ROW) {
-		if (sqlite3_column_int64(res, 0) != nodeID) {
+	while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+		if (sqlite3_column_int64(stmt, 0) != nodeID) {
 			nodeIDIndex++;
-			if (nodeIDIndex == 0) nodeCount = sqlite3_column_int64(res, 6);
-			nodeID = sqlite3_column_int64(res, 0);
+			if (nodeIDIndex == 0) nodeCount = sqlite3_column_int64(stmt, 6);
+			nodeID = sqlite3_column_int64(stmt, 0);
 			if (nodeCount < 1000 || (nodeIDIndex % 999 == 0)) cout << "\rWriting node " << (nodeIDIndex + 1) << "/" << nodeCount << " (" << ((nodeIDIndex + 1) * 100.0) / nodeCount << "%)";
 			//We're starting a new node so write the current one and clear the protobuf message
 			if (nodeIDIndex > 0) {
@@ -694,11 +922,11 @@ void writeOsmAndStructure_mapIndex_levels_block(unsigned char *coordinatesByteAr
 				stringNamesByteArrayPtr = stringNamesByteArrayPtrWithinThread;
 			}
 
-			lat = sqlite3_column_double(res, 1);
-			lon = sqlite3_column_double(res, 2);
+			lat = sqlite3_column_double(stmt, 1);
+			lon = sqlite3_column_double(stmt, 2);
 
-			deltaLat = latitudeToInt32(lat, 21) - overallBoundingRectangle.topInt32;
-			deltaLon = longitudeToInt32(lon, 21) - overallBoundingRectangle.leftInt32;
+			deltaLat = latitudeToInt32(lat, 21) - rectangle->topInt32;
+			deltaLon = longitudeToInt32(lon, 21) - rectangle->leftInt32;
 			//cout << endl << "node deltaLat=" << deltaLat << " (lower 5 bits=" << (deltaLat & 0x1f) << "), deltaLon=" << deltaLon << " (lower 5 bits=" << (deltaLon & 0x1f) << ")" << endl;
 			
 			deltaLat >>= 5;
@@ -716,9 +944,9 @@ void writeOsmAndStructure_mapIndex_levels_block(unsigned char *coordinatesByteAr
 		}
 
 		//Write the tags
-		string key = (char*)sqlite3_column_text(res, 3);
-		string value = (char*)sqlite3_column_text(res, 4);
-		uint32_t tagType = sqlite3_column_int64(res, 5); //0 = high-priority machine-readable, 1 = low-priority machine-readable, 2 = human-readable
+		string key = (char*)sqlite3_column_text(stmt, 3);
+		string value = (char*)sqlite3_column_text(stmt, 4);
+		uint32_t tagType = sqlite3_column_int64(stmt, 5); //0 = high-priority machine-readable, 1 = low-priority machine-readable, 2 = human-readable
 		//cout << endl << key << "=" << value << ", tagType=" << tagType << endl;
 		switch (tagType) {
 			case 0: //High-priority machine-readable
@@ -749,15 +977,16 @@ void writeOsmAndStructure_mapIndex_levels_block(unsigned char *coordinatesByteAr
 	mapDataBlockCos.WriteVarint32(mapData.ByteSizeLong());
 	mapData.SerializeToCodedStream(&mapDataBlockCos);
 	mapData.Clear();
-	sqlite3_finalize(res);
+	sqlite3_finalize(stmt);
+	stmt = nullptr;
 
 	cout << "\rWriting node " << nodeCount << "/" << nodeCount << " (100%)                                        ";
 	
 	mapDataBlockCos.WriteTag((OsmAnd::OBF::MapDataBlock::kStringTableFieldNumber << 3) | 2);
-	uint64_t stringTableSize = getFileSize(L"mapDataBlockStringTable");
+	uint64_t stringTableSize = getFileSize(utf8_to_wstring(string("mapDataBlockStringTable_" + tempFilename)).c_str());
 	//writeOBFVarint32or64BE(mapDataBlockCos, stringTableSize);
 	mapDataBlockCos.WriteVarint32(stringTableSize);
-	copyRawFileIntoCodedOutputStream(mapDataBlockCos, "mapDataBlockStringTable", stringTableSize);
+	copyRawFileIntoCodedOutputStream(mapDataBlockCos, "mapDataBlockStringTable_" + tempFilename, stringTableSize);
 }
 
 void writeMapEncodingRule(string tag, string value, uint32_t minZoom) {

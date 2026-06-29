@@ -21,6 +21,8 @@
 #include <memory>
 #include <string_view>
 #include <filesystem>
+#include <array>
+#include <process.h>
 
 using namespace std;
 void writeOBFVarint32or64BE(google::protobuf::io::CodedOutputStream &i, uint64_t n);
@@ -28,19 +30,20 @@ uint64_t copyRawFileIntoCodedOutputStream(google::protobuf::io::CodedOutputStrea
 __int64 getFileSize(const wchar_t* name);
 std::wstring utf8_to_wstring(const std::string& str);
 std::string wstring_to_utf8(const std::wstring& str);
-uint64_t writeMapIndex(string name, uint32_t threadID, unsigned char *coordinatesByteArrayPtrWithinThread, unsigned char *typesByteArrayPtrWithinThread, unsigned char *additionalTypesByteArrayPtrWithinThread, unsigned char *stringNamesByteArrayPtrWithinThread);
+uint64_t writeMapIndex(string name);
 void writeOsmAndStructure_mapIndex_rules(google::protobuf::io::CodedOutputStream &cos);
 void writeMapEncodingRule(string tag, string value, uint32_t minZoom);
 uint64_t GetSystemTimeAsUnixTime();
 static inline int32_t latitudeToInt32(double latitude, uint32_t zoom);
 static inline int32_t longitudeToInt32(double longitude, uint32_t zoom);
 void writeOsmAndStructure_mapIndex_detailed_level_1x1(unsigned char *coordinatesByteArrayPtrWithinThread, unsigned char *typesByteArrayPtrWithinThread, unsigned char *additionalTypesByteArrayPtrWithinThread, unsigned char *stringNamesByteArrayPtrWithinThread);
-void writeOsmAndStructure_mapIndex_detailed_level_2x2(unsigned char *coordinatesByteArrayPtrWithinThread, unsigned char *typesByteArrayPtrWithinThread, unsigned char *additionalTypesByteArrayPtrWithinThread, unsigned char *stringNamesByteArrayPtrWithinThread);
+void writeOsmAndStructure_mapIndex_detailed_level_2x2();
 double int32ToLatitude(uint64_t in, uint32_t zoom);
 double int32ToLongitude(uint64_t in, uint32_t zoom);
 uint32_t getVarintRequiredBytes(uint64_t i);
 void printHelp();
 static inline int min3(int64_t a, int64_t b, int64_t c);
+void writeOsmAndStructure_mapIndex_levels_block_ThreadWorker(void *param);
 
 #define FILE_COPY_BUFFER_SIZE (32 * 1048576) //This needs the parentheses or it will evaluate the numbers separately
 #define PI 3.1415926535
@@ -101,7 +104,20 @@ public:
 };
 static BoundingRectangle overallBoundingRectangle;
 
-void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRectangle *rectangle, sqlite3 *dbConnection, sqlite3_stmt *stmt, unsigned char *coordinatesByteArrayPtrWithinThread, unsigned char *typesByteArrayPtrWithinThread, unsigned char *additionalTypesByteArrayPtrWithinThread, unsigned char *stringNamesByteArrayPtrWithinThread);
+struct MapDataBlockThreadInfo {
+	string tempFilename;
+	BoundingRectangle *rectangle;
+	sqlite3 *dbConnection;
+	sqlite3_stmt *stmt;
+	int threadID;
+	unsigned char *coordinatesByteArrayPtrWithinThread;
+	unsigned char *typesByteArrayPtrWithinThread;
+	unsigned char *additionalTypesByteArrayPtrWithinThread;
+	unsigned char *stringNamesByteArrayPtrWithinThread;
+	MapDataBlockThreadInfo():tempFilename(""),rectangle(nullptr),dbConnection(nullptr),stmt(nullptr),threadID(0),coordinatesByteArrayPtrWithinThread(nullptr),typesByteArrayPtrWithinThread(nullptr),additionalTypesByteArrayPtrWithinThread(nullptr),stringNamesByteArrayPtrWithinThread(nullptr){}
+};
+
+void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRectangle *rectangle, sqlite3 *dbConnection, sqlite3_stmt *stmt, int threadID, unsigned char *coordinatesByteArrayPtrWithinThread, unsigned char *typesByteArrayPtrWithinThread, unsigned char *additionalTypesByteArrayPtrWithinThread, unsigned char *stringNamesByteArrayPtrWithinThread);
 
 template <typename T>
 T swap_endian(T u) {
@@ -122,6 +138,7 @@ static uint64_t currentDiskUsage = 0;
 static sqlite3 *db;
 static sqlite3_stmt *res;
 static string databaseFilename = "";
+static bool shouldKeepTempFiles = false;
 
 struct SQLite3StatementDeleter {
 	void operator()(sqlite3_stmt* stmt) const {
@@ -133,7 +150,7 @@ struct SQLite3StatementDeleter {
 };
 
 int main(int argc, char** argv) {
-	cout << "OsmAndMapCreator++ v0.1.1" << endl;
+	cout << "OsmAndMapCreator++ v0.1.2" << endl;
 
 	uint64_t overallStartTime = GetSystemTimeAsUnixTime();
 
@@ -141,6 +158,7 @@ int main(int argc, char** argv) {
 	string outputFilename = "";
 	bool foundInputFilenameArgument = false;
 	bool foundOutputFilenameArgument = false;
+	shouldKeepTempFiles = false;
 
 	//If there is only 1 argument that is not the help option then assume that it's the input filename
 	if (argc == 2) {
@@ -163,6 +181,10 @@ int main(int argc, char** argv) {
 			if ((arg_view == "-o"sv || arg_view == "-output"sv || arg_view == "--output"sv || arg_view == "/o"sv) && i < (argc - 1)) {
 				foundOutputFilenameArgument = true;
 				outputFilename = string(argv[i + 1]);
+			}
+
+			if ((arg_view == "-keep-temp-files"sv || arg_view == "--keep-temp-files"sv || arg_view == "-keep_temp_files"sv || arg_view == "--keep_temp_files"sv || arg_view == "/keep-temp-files" || arg_view == "/keep_temp_files") && i < (argc - 1)) {
+				shouldKeepTempFiles = true;
 			}
 		}
 	}
@@ -244,13 +266,13 @@ int main(int argc, char** argv) {
 	//Save the MapIndex to a temp file but don't write it to the OBF file yet
 	uint64_t mapIndexSize = 0;
 
-	writeMapIndex(inputFilePath.stem().string(), 0 /* thread ID */, coordinatesByteArrayTmpUniquePtr.get(), typesByteArrayTmpUniquePtr.get(), additionalTypesByteArrayTmpUniquePtr.get(), stringNamesByteArrayTmpUniquePtr.get());
+	writeMapIndex(inputFilePath.stem().string());
 	mapIndexSize = getFileSize(utf8_to_wstring("mapIndex").c_str());
 	currentDiskUsage += mapIndexSize;
 	//cout << endl << "mapIndex temp file size: " << mapIndexSize;
 	writeOBFVarint32or64BE(cos, mapIndexSize);
 	copyRawFileIntoCodedOutputStream(cos, "mapIndex", mapIndexSize);
-	remove("mapIndex");
+	if (!shouldKeepTempFiles) remove("mapIndex");
 	currentDiskUsage = -mapIndexSize;
 
 	//Version 2
@@ -270,15 +292,16 @@ int main(int argc, char** argv) {
 }
 
 void printHelp() {
-	cout << "OsmAndMapCreator++ version 0.1";
+	cout << "OsmAndMapCreator++ version 0.1.2";
 	cout << endl << endl << "This utility generates OBF map files for OsmAnd from an OpenStreetMap SQLite database";
 	cout << endl << endl << "Usage:";
-	cout << endl << "\t-i [path]\tInput filename (required)";
-	cout << endl << "\t-o [path]\tOutput filename";
-	cout << endl << "\t-h\t\tPrint this message";
+	cout << endl << "\t-i [path]\t\tInput filename (required)";
+	cout << endl << "\t-o [path]\t\tOutput filename";
+	cout << endl << "\t--keep-temp-files\tPreserve temp files for debugging (disabled by default)";
+	cout << endl << "\t-h\t\t\tPrint this message";
 }
 
-uint64_t writeMapIndex(string name, uint32_t threadID, unsigned char *coordinatesByteArrayPtrWithinThread, unsigned char *typesByteArrayPtrWithinThread, unsigned char *additionalTypesByteArrayPtrWithinThread, unsigned char *stringNamesByteArrayPtrWithinThread) {
+uint64_t writeMapIndex(string name) {
 	//Create a temp file for the MapIndex
 	ofstream mapIndexTemp("mapIndex", ios::binary);
 	google::protobuf::io::OstreamOutputStream mapIndexTempOstream(&mapIndexTemp);
@@ -297,11 +320,12 @@ uint64_t writeMapIndex(string name, uint32_t threadID, unsigned char *coordinate
 
 	//MapIndex.levels
 	mapIndexCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::kLevelsFieldNumber << 3) | 6);
-	writeOsmAndStructure_mapIndex_detailed_level_2x2(coordinatesByteArrayPtrWithinThread, typesByteArrayPtrWithinThread, additionalTypesByteArrayPtrWithinThread, stringNamesByteArrayPtrWithinThread);
+	writeOsmAndStructure_mapIndex_detailed_level_2x2();
 	int64_t mapRootLevelSize = getFileSize(L"mapRootLevel");
 	writeOBFVarint32or64BE(mapIndexCos, mapRootLevelSize);
 	//cout << endl << "mapRootLevel size = " << mapRootLevelSize;
 	copyRawFileIntoCodedOutputStream(mapIndexCos, "mapRootLevel", mapRootLevelSize);
+	if (!shouldKeepTempFiles) remove("mapRootLevel");
 	return 0;
 }
 
@@ -429,14 +453,15 @@ void writeOsmAndStructure_mapIndex_detailed_level_1x1(unsigned char *coordinates
 
 	//MapRootLevel.blocks
 	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kBlocksFieldNumber << 3) | 2);
-	writeOsmAndStructure_mapIndex_levels_block("mapDataBlock", &overallBoundingRectangle, db, res, coordinatesByteArrayPtrWithinThread, typesByteArrayPtrWithinThread, additionalTypesByteArrayPtrWithinThread, stringNamesByteArrayPtrWithinThread);
+	writeOsmAndStructure_mapIndex_levels_block("mapDataBlock", &overallBoundingRectangle, db, res, 0, coordinatesByteArrayPtrWithinThread, typesByteArrayPtrWithinThread, additionalTypesByteArrayPtrWithinThread, stringNamesByteArrayPtrWithinThread);
 	uint64_t mapDataBlockSize = getFileSize(L"mapDataBlock");
 	mapRootLevelTempCos.WriteVarint32(mapDataBlockSize);
 	copyRawFileIntoCodedOutputStream(mapRootLevelTempCos, "mapDataBlock", mapDataBlockSize);
+	if (!shouldKeepTempFiles) remove("mapDataBlock");
 }
 
 //OsmAndMapIndex.MapRootLevel
-void writeOsmAndStructure_mapIndex_detailed_level_2x2(unsigned char *coordinatesByteArrayPtrWithinThread, unsigned char *typesByteArrayPtrWithinThread, unsigned char *additionalTypesByteArrayPtrWithinThread, unsigned char *stringNamesByteArrayPtrWithinThread) {
+void writeOsmAndStructure_mapIndex_detailed_level_2x2() {
 	remove("mapRootLevel");
 	ofstream mapRootLevelTemp("mapRootLevel", ios::binary);
 	google::protobuf::io::OstreamOutputStream mapRootLevelTempOstream(&mapRootLevelTemp);
@@ -487,40 +512,6 @@ void writeOsmAndStructure_mapIndex_detailed_level_2x2(unsigned char *coordinates
 	r3.bottomInt32 = overallBoundingRectangle.bottomInt32;
 	r3.calculateDoubleValuesFromInt32();
 
-	//For some reason, the box has to be built in an EXACT way that includes shiftToMapData with a wiretype of 6
-	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kBoxesFieldNumber << 3) | 6);
-	uint32_t boxSize = 0;
-	boxSize += 4;
-	boxSize++;
-	boxSize += getVarintRequiredBytes(0);
-	boxSize++;
-	boxSize += getVarintRequiredBytes(0);
-	boxSize++;
-	boxSize += getVarintRequiredBytes(0);
-	boxSize++;
-	boxSize += getVarintRequiredBytes(0);
-	boxSize++;
-	boxSize = swap_endian(boxSize);
-	mapRootLevelTempCos.WriteRaw(&boxSize, 4);
-	boxSize = swap_endian(boxSize);
-	mapRootLevelTempCos.WriteTag(OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kLeftFieldNumber << 3);
-	mapRootLevelTempCos.WriteVarint32(0);
-	mapRootLevelTempCos.WriteTag(OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kRightFieldNumber << 3);
-	mapRootLevelTempCos.WriteVarint32(0);
-	mapRootLevelTempCos.WriteTag(OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kTopFieldNumber << 3);
-	mapRootLevelTempCos.WriteVarint32(0);
-	mapRootLevelTempCos.WriteTag(OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kBottomFieldNumber << 3);
-	mapRootLevelTempCos.WriteVarint32(0);
-	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kShiftToMapDataFieldNumber << 3) | 6);
-	//cout << endl << "boxSize=" << boxSize;
-	boxSize++;
-	boxSize = swap_endian(boxSize);
-	mapRootLevelTempCos.WriteRaw(&boxSize, 4);
-
-
-
-	//MapRootLevel.blocks
-	//We need to save the offsets to these blocks
 	sqlite3_stmt *block0Stmt, *block1Stmt, *block2Stmt, *block3Stmt;
 	block0Stmt = nullptr;
 	block1Stmt = nullptr;
@@ -535,33 +526,93 @@ void writeOsmAndStructure_mapIndex_detailed_level_2x2(unsigned char *coordinates
 	sqlite3_open_v2(databaseFilename.c_str(), &block1DBConnection, SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, NULL);
 	sqlite3_open_v2(databaseFilename.c_str(), &block2DBConnection, SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, NULL);
 	sqlite3_open_v2(databaseFilename.c_str(), &block3DBConnection, SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, NULL);
-	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kBlocksFieldNumber << 3) | 2);
-	writeOsmAndStructure_mapIndex_levels_block("mapDataBlock0.tmp", &r0, block0DBConnection, block0Stmt, coordinatesByteArrayPtrWithinThread, typesByteArrayPtrWithinThread, additionalTypesByteArrayPtrWithinThread, stringNamesByteArrayPtrWithinThread);
+	
+	/*unique_ptr<unsigned char[]> coordinatesByteArrayTmpUniquePtr = make_unique<unsigned char[]>(1048576);
+	unique_ptr<unsigned char[]> typesByteArrayTmpUniquePtr = make_unique<unsigned char[]>(1048576);
+	unique_ptr<unsigned char[]> additionalTypesByteArrayTmpUniquePtr = make_unique<unsigned char[]>(1048576);
+	unique_ptr<unsigned char[]> stringNamesByteArrayTmpUniquePtr = make_unique<unsigned char[]>(1048576);*/
+	array<unique_ptr<unsigned char[]>, 4> coordinatesByteArrayUniquePtrArrayForThreads;
+	coordinatesByteArrayUniquePtrArrayForThreads[0] = make_unique<unsigned char[]>(1048576);
+	coordinatesByteArrayUniquePtrArrayForThreads[1] = make_unique<unsigned char[]>(1048576);
+	coordinatesByteArrayUniquePtrArrayForThreads[2] = make_unique<unsigned char[]>(1048576);
+	coordinatesByteArrayUniquePtrArrayForThreads[3] = make_unique<unsigned char[]>(1048576);
+	
+	array<unique_ptr<unsigned char[]>, 4> typesByteArrayUniquePtrArrayForThreads;
+	typesByteArrayUniquePtrArrayForThreads[0] = make_unique<unsigned char[]>(1048576);
+	typesByteArrayUniquePtrArrayForThreads[1] = make_unique<unsigned char[]>(1048576);
+	typesByteArrayUniquePtrArrayForThreads[2] = make_unique<unsigned char[]>(1048576);
+	typesByteArrayUniquePtrArrayForThreads[3] = make_unique<unsigned char[]>(1048576);
+	
+	array<unique_ptr<unsigned char[]>, 4> additionalTypesByteArrayUniquePtrArrayForThreads;
+	additionalTypesByteArrayUniquePtrArrayForThreads[0] = make_unique<unsigned char[]>(1048576);
+	additionalTypesByteArrayUniquePtrArrayForThreads[1] = make_unique<unsigned char[]>(1048576);
+	additionalTypesByteArrayUniquePtrArrayForThreads[2] = make_unique<unsigned char[]>(1048576);
+	additionalTypesByteArrayUniquePtrArrayForThreads[3] = make_unique<unsigned char[]>(1048576);
+	
+	array<unique_ptr<unsigned char[]>, 4> stringNamesByteArrayUniquePtrArrayForThreads;
+	stringNamesByteArrayUniquePtrArrayForThreads[0] = make_unique<unsigned char[]>(1048576);
+	stringNamesByteArrayUniquePtrArrayForThreads[1] = make_unique<unsigned char[]>(1048576);
+	stringNamesByteArrayUniquePtrArrayForThreads[2] = make_unique<unsigned char[]>(1048576);
+	stringNamesByteArrayUniquePtrArrayForThreads[3] = make_unique<unsigned char[]>(1048576);
+
+	MapDataBlockThreadInfo threadInfo[4];
+	threadInfo[0].tempFilename = "mapDataBlock0.tmp";
+	threadInfo[0].rectangle = &r0;
+	threadInfo[0].dbConnection = block0DBConnection;
+	threadInfo[0].stmt = block0Stmt;
+	threadInfo[0].threadID = 0;
+	threadInfo[0].coordinatesByteArrayPtrWithinThread = coordinatesByteArrayUniquePtrArrayForThreads[0].get();
+	threadInfo[0].typesByteArrayPtrWithinThread = typesByteArrayUniquePtrArrayForThreads[0].get();
+	threadInfo[0].additionalTypesByteArrayPtrWithinThread = additionalTypesByteArrayUniquePtrArrayForThreads[0].get();
+	threadInfo[0].stringNamesByteArrayPtrWithinThread = stringNamesByteArrayUniquePtrArrayForThreads[0].get();
+	uintptr_t thread0Handle = _beginthread(writeOsmAndStructure_mapIndex_levels_block_ThreadWorker, 0, &threadInfo[0]);
+
+	threadInfo[1].tempFilename = "mapDataBlock1.tmp";
+	threadInfo[1].rectangle = &r1;
+	threadInfo[1].dbConnection = block1DBConnection;
+	threadInfo[1].stmt = block1Stmt;
+	threadInfo[1].threadID = 1;
+	threadInfo[1].coordinatesByteArrayPtrWithinThread = coordinatesByteArrayUniquePtrArrayForThreads[1].get();
+	threadInfo[1].typesByteArrayPtrWithinThread = typesByteArrayUniquePtrArrayForThreads[1].get();
+	threadInfo[1].additionalTypesByteArrayPtrWithinThread = additionalTypesByteArrayUniquePtrArrayForThreads[1].get();
+	threadInfo[1].stringNamesByteArrayPtrWithinThread = stringNamesByteArrayUniquePtrArrayForThreads[1].get();
+	uintptr_t thread1Handle = _beginthread(writeOsmAndStructure_mapIndex_levels_block_ThreadWorker, 0, &threadInfo[1]);
+
+	threadInfo[2].tempFilename = "mapDataBlock2.tmp";
+	threadInfo[2].rectangle = &r2;
+	threadInfo[2].dbConnection = block2DBConnection;
+	threadInfo[2].stmt = block2Stmt;
+	threadInfo[2].threadID = 2;
+	threadInfo[2].coordinatesByteArrayPtrWithinThread = coordinatesByteArrayUniquePtrArrayForThreads[2].get();
+	threadInfo[2].typesByteArrayPtrWithinThread = typesByteArrayUniquePtrArrayForThreads[2].get();
+	threadInfo[2].additionalTypesByteArrayPtrWithinThread = additionalTypesByteArrayUniquePtrArrayForThreads[2].get();
+	threadInfo[2].stringNamesByteArrayPtrWithinThread = stringNamesByteArrayUniquePtrArrayForThreads[2].get();
+	uintptr_t thread2Handle = _beginthread(writeOsmAndStructure_mapIndex_levels_block_ThreadWorker, 0, &threadInfo[2]);
+
+	threadInfo[3].tempFilename = "mapDataBlock3.tmp";
+	threadInfo[3].rectangle = &r3;
+	threadInfo[3].dbConnection = block3DBConnection;
+	threadInfo[3].stmt = block3Stmt;
+	threadInfo[3].threadID = 3;
+	threadInfo[3].coordinatesByteArrayPtrWithinThread = coordinatesByteArrayUniquePtrArrayForThreads[3].get();
+	threadInfo[3].typesByteArrayPtrWithinThread = typesByteArrayUniquePtrArrayForThreads[3].get();
+	threadInfo[3].additionalTypesByteArrayPtrWithinThread = additionalTypesByteArrayUniquePtrArrayForThreads[3].get();
+	threadInfo[3].stringNamesByteArrayPtrWithinThread = stringNamesByteArrayUniquePtrArrayForThreads[3].get();
+	uintptr_t thread3Handle = _beginthread(writeOsmAndStructure_mapIndex_levels_block_ThreadWorker, 0, &threadInfo[3]);
+	cout << endl << "Waiting for threads...";
+	WaitForSingleObject((HANDLE)thread0Handle, INFINITE);
+	WaitForSingleObject((HANDLE)thread1Handle, INFINITE);
+	WaitForSingleObject((HANDLE)thread2Handle, INFINITE);
+	WaitForSingleObject((HANDLE)thread3Handle, INFINITE);
+	cout << "done";
+	//writeOsmAndStructure_mapIndex_levels_block("mapDataBlock0.tmp", &r0, block0DBConnection, block0Stmt, 0 /* thread ID */, coordinatesByteArrayUniquePtrArrayForThreads[0].get(), typesByteArrayUniquePtrArrayForThreads[0].get(), additionalTypesByteArrayUniquePtrArrayForThreads[0].get(), stringNamesByteArrayUniquePtrArrayForThreads[0].get());
+	//writeOsmAndStructure_mapIndex_levels_block("mapDataBlock1.tmp", &r1, block1DBConnection, block1Stmt, 1 /* thread ID */, coordinatesByteArrayUniquePtrArrayForThreads[1].get(), typesByteArrayUniquePtrArrayForThreads[1].get(), additionalTypesByteArrayUniquePtrArrayForThreads[1].get(), stringNamesByteArrayUniquePtrArrayForThreads[1].get());
+	//writeOsmAndStructure_mapIndex_levels_block("mapDataBlock2.tmp", &r2, block2DBConnection, block2Stmt, 2 /* thread ID */, coordinatesByteArrayUniquePtrArrayForThreads[2].get(), typesByteArrayUniquePtrArrayForThreads[2].get(), additionalTypesByteArrayUniquePtrArrayForThreads[2].get(), stringNamesByteArrayUniquePtrArrayForThreads[2].get());
+	//writeOsmAndStructure_mapIndex_levels_block("mapDataBlock3.tmp", &r3, block3DBConnection, block3Stmt, 3 /* thread ID */, coordinatesByteArrayUniquePtrArrayForThreads[3].get(), typesByteArrayUniquePtrArrayForThreads[3].get(), additionalTypesByteArrayUniquePtrArrayForThreads[3].get(), stringNamesByteArrayUniquePtrArrayForThreads[3].get());
 	uint64_t block0Size = getFileSize(L"mapDataBlock0.tmp");
-	mapRootLevelTempCos.WriteVarint32(block0Size);
-	copyRawFileIntoCodedOutputStream(mapRootLevelTempCos, "mapDataBlock0.tmp", block0Size);
-	//remove("mapDataBlock0.tmp");
-
-	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kBlocksFieldNumber << 3) | 2);
-	writeOsmAndStructure_mapIndex_levels_block("mapDataBlock1.tmp", &r1, block1DBConnection, block1Stmt, coordinatesByteArrayPtrWithinThread, typesByteArrayPtrWithinThread, additionalTypesByteArrayPtrWithinThread, stringNamesByteArrayPtrWithinThread);
 	uint64_t block1Size = getFileSize(L"mapDataBlock1.tmp");
-	mapRootLevelTempCos.WriteVarint32(block1Size);
-	copyRawFileIntoCodedOutputStream(mapRootLevelTempCos, "mapDataBlock1.tmp", block1Size);
-	//remove("mapDataBlock1.tmp");
-
-	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kBlocksFieldNumber << 3) | 2);
-	writeOsmAndStructure_mapIndex_levels_block("mapDataBlock2.tmp", &r2, block2DBConnection, block2Stmt, coordinatesByteArrayPtrWithinThread, typesByteArrayPtrWithinThread, additionalTypesByteArrayPtrWithinThread, stringNamesByteArrayPtrWithinThread);
 	uint64_t block2Size = getFileSize(L"mapDataBlock2.tmp");
-	mapRootLevelTempCos.WriteVarint32(block2Size);
-	copyRawFileIntoCodedOutputStream(mapRootLevelTempCos, "mapDataBlock2.tmp", block2Size);
-	//remove("mapDataBlock2.tmp");
-
-	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kBlocksFieldNumber << 3) | 2);
-	writeOsmAndStructure_mapIndex_levels_block("mapDataBlock3.tmp", &r3, block3DBConnection, block3Stmt, coordinatesByteArrayPtrWithinThread, typesByteArrayPtrWithinThread, additionalTypesByteArrayPtrWithinThread, stringNamesByteArrayPtrWithinThread);
 	uint64_t block3Size = getFileSize(L"mapDataBlock3.tmp");
-	mapRootLevelTempCos.WriteVarint32(block3Size);
-	copyRawFileIntoCodedOutputStream(mapRootLevelTempCos, "mapDataBlock3.tmp", block3Size);
-	//remove("mapDataBlock3.tmp");
 
 	if (block0Stmt != nullptr) {
 		sqlite3_finalize(block0Stmt);
@@ -583,9 +634,229 @@ void writeOsmAndStructure_mapIndex_detailed_level_2x2(unsigned char *coordinates
 	sqlite3_close(block1DBConnection);
 	sqlite3_close(block2DBConnection);
 	sqlite3_close(block3DBConnection);
+	
+	//MapRootLevel.boxes
+	//Write these after generating the data blocks so we don't have to wait to find the offsets
+
+	//For some reason, the box has to be built in an EXACT way that includes shiftToMapData with a wiretype of 6
+
+	//We need a root box to contain the other ones because it can't process more than one top-level box
+	//Pre-calculate the box sizes
+	//These don't include the tag and fixed32 size
+	uint32_t boxSizes[4];
+	boxSizes[0] = 1 + getVarintRequiredBytes(0) + 1 + getVarintRequiredBytes(((overallBoundingRectangle.rightInt32 - r0.rightInt32) << 1) | 1) + 1 + getVarintRequiredBytes(0) + 1 + getVarintRequiredBytes(((overallBoundingRectangle.bottomInt32 - r0.bottomInt32) << 1) | 1) + 1 + 4;
+	boxSizes[1] = 1 + getVarintRequiredBytes((r1.leftInt32 - overallBoundingRectangle.leftInt32) << 1) + 1 + getVarintRequiredBytes(0) + 1 + getVarintRequiredBytes(0) + 1 + getVarintRequiredBytes(((overallBoundingRectangle.bottomInt32 - r0.bottomInt32) << 1) | 1) + 1 + 4;
+	boxSizes[2] = 1 + getVarintRequiredBytes(0) + 1 + getVarintRequiredBytes(((overallBoundingRectangle.rightInt32 - r0.rightInt32) << 1) | 1) + 1 + getVarintRequiredBytes((r2.topInt32 - overallBoundingRectangle.topInt32) << 1) + 1 + getVarintRequiredBytes(0) + 1 + 4;
+	boxSizes[3] = 1 + getVarintRequiredBytes((r3.leftInt32 - overallBoundingRectangle.leftInt32) << 1) + 1 + getVarintRequiredBytes(0) + 1 + getVarintRequiredBytes((r3.topInt32 - overallBoundingRectangle.topInt32) << 1) + 1 + getVarintRequiredBytes(0) + 1 + 4;
+	cout << endl << "Box sizes: " << boxSizes[0] << "," << boxSizes[1] << "," << boxSizes[2] << "," << boxSizes[3];
+
+	//Root box
+	uint32_t boxSize = 0;
+	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kBoxesFieldNumber << 3) | 6);
+	boxSize = 1 + getVarintRequiredBytes(0) + 1 + getVarintRequiredBytes(0) + 1 + getVarintRequiredBytes(0) + 1 + getVarintRequiredBytes(0) + 1 + 4 + boxSizes[0] + 1 + 4 + boxSizes[1] + 1 + 4 + boxSizes[2] + 1 + 4 + boxSizes[3];
+	//cout << endl << "Root box size: " << boxSize;
+	boxSize = swap_endian(boxSize);
+	mapRootLevelTempCos.WriteRaw(&boxSize, 4);
+	boxSize = swap_endian(boxSize);
+	mapRootLevelTempCos.WriteTag(OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kLeftFieldNumber << 3);
+	mapRootLevelTempCos.WriteVarint32(0);
+	mapRootLevelTempCos.WriteTag(OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kRightFieldNumber << 3);
+	mapRootLevelTempCos.WriteVarint32(0);
+	mapRootLevelTempCos.WriteTag(OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kTopFieldNumber << 3);
+	mapRootLevelTempCos.WriteVarint32(0);
+	mapRootLevelTempCos.WriteTag(OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kBottomFieldNumber << 3);
+	mapRootLevelTempCos.WriteVarint32(0);
+
+	//Top-left
+	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kBoxesFieldNumber << 3) | 6);
+	boxSize = 0;
+	boxSize += 4;
+	boxSize++;
+	boxSize += getVarintRequiredBytes(0);
+	boxSize++;
+	boxSize += getVarintRequiredBytes(((overallBoundingRectangle.rightInt32 - r0.rightInt32) << 1) | 1); //It should be subtracted the other way but this way it's positive without using abs()
+	boxSize++;
+	boxSize += getVarintRequiredBytes(0);
+	boxSize++;
+	boxSize += getVarintRequiredBytes(((overallBoundingRectangle.bottomInt32 - r0.bottomInt32) << 1) | 1); //It should be subtracted the other way but this way it's positive without using abs()
+	boxSize++;
+	boxSize = swap_endian(boxSize);
+	mapRootLevelTempCos.WriteRaw(&boxSize, 4);
+	boxSize = swap_endian(boxSize);
+	mapRootLevelTempCos.WriteTag(OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kLeftFieldNumber << 3);
+	mapRootLevelTempCos.WriteVarint32(0);
+	mapRootLevelTempCos.WriteTag(OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kRightFieldNumber << 3);
+	mapRootLevelTempCos.WriteVarint32(((overallBoundingRectangle.rightInt32 - r0.rightInt32) << 1) | 1); //It should be subtracted the other way but this way it's positive without using abs()
+	mapRootLevelTempCos.WriteTag(OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kTopFieldNumber << 3);
+	mapRootLevelTempCos.WriteVarint32(0);
+	mapRootLevelTempCos.WriteTag(OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kBottomFieldNumber << 3);
+	mapRootLevelTempCos.WriteVarint32(((overallBoundingRectangle.bottomInt32 - r0.bottomInt32) << 1) | 1); //It should be subtracted the other way but this way it's positive without using abs()
+	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kShiftToMapDataFieldNumber << 3) | 6);
+	//cout << endl << "boxSize=" << boxSize;
+	
+	/*This should be
+		[current boxSize_without_tag_and_fixed32size] +
+		[all future boxes with tag and fixed32 size] +
+		[sizes of any undesired MapDataBlocks + tag and varint size] +
+		[desired box's tag]
+	so the offset is from MapDataBox.left_tag to MapDataBlock.varint_size*/
+	//This line skips the MapDataBoxes
+	uint32_t shiftToMapData = boxSize + 1 + 4 + boxSizes[1] + 1 + 4 + boxSizes[2] + 1 + 4 + boxSizes[3] + 1 /* Skip the MapDataBlock tag */;
+	shiftToMapData = swap_endian(shiftToMapData);
+	mapRootLevelTempCos.WriteRaw(&shiftToMapData, 4); //shiftToMapData
+
+	//Top-right
+	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kBoxesFieldNumber << 3) | 6);
+	boxSize = 0;
+	boxSize += 4;
+	boxSize++;
+	boxSize += getVarintRequiredBytes((r1.leftInt32 - overallBoundingRectangle.leftInt32) << 1);
+	boxSize++;
+	boxSize += getVarintRequiredBytes(0);
+	boxSize++;
+	boxSize += getVarintRequiredBytes(0);
+	boxSize++;
+	boxSize += getVarintRequiredBytes(((overallBoundingRectangle.bottomInt32 - r1.bottomInt32) << 1) | 1); //It should be subtracted the other way but this way it's positive without using abs()
+	boxSize++;
+	boxSize = swap_endian(boxSize);
+	mapRootLevelTempCos.WriteRaw(&boxSize, 4);
+	boxSize = swap_endian(boxSize);
+	mapRootLevelTempCos.WriteTag(OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kLeftFieldNumber << 3);
+	mapRootLevelTempCos.WriteVarint32((r1.leftInt32 - overallBoundingRectangle.leftInt32) << 1);
+	mapRootLevelTempCos.WriteTag(OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kRightFieldNumber << 3);
+	mapRootLevelTempCos.WriteVarint32(0);
+	mapRootLevelTempCos.WriteTag(OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kTopFieldNumber << 3);
+	mapRootLevelTempCos.WriteVarint32(0);
+	mapRootLevelTempCos.WriteTag(OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kBottomFieldNumber << 3);
+	mapRootLevelTempCos.WriteVarint32(((overallBoundingRectangle.bottomInt32 - r1.bottomInt32) << 1) | 1); //It should be subtracted the other way but this way it's positive without using abs()
+	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kShiftToMapDataFieldNumber << 3) | 6);
+	//cout << endl << "boxSize=" << boxSize;
+
+	/*This should be
+		[current boxSize_without_tag_and_fixed32size] +
+		[all future boxes with tag and fixed32 size] +
+		[sizes of any undesired MapDataBlocks + tag and varint size] +
+		[desired box's tag]
+	so the offset is from MapDataBox.left_tag to MapDataBlock.varint_size*/
+	//This line skips the MapDataBoxes
+	shiftToMapData = boxSize + 1 + 4 + boxSizes[2] + 1 + 4 + boxSizes[3] + 1 /* Skip the MapDataBlock tag */;
+	//This line skips the MapDataBlocks
+	shiftToMapData += getVarintRequiredBytes(block0Size) + block0Size + 1;
+	shiftToMapData = swap_endian(shiftToMapData);
+	mapRootLevelTempCos.WriteRaw(&shiftToMapData, 4); //shiftToMapData
+
+	//Bottom-left
+	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kBoxesFieldNumber << 3) | 6);
+	boxSize = 0;
+	boxSize += 4;
+	boxSize++;
+	boxSize += getVarintRequiredBytes(0);
+	boxSize++;
+	boxSize += getVarintRequiredBytes(((overallBoundingRectangle.rightInt32 - r2.rightInt32) << 1) | 1); //It should be subtracted the other way but this way it's positive without using abs()
+	boxSize++;
+	boxSize += getVarintRequiredBytes((r2.topInt32 - overallBoundingRectangle.topInt32) << 1);
+	boxSize++;
+	boxSize += getVarintRequiredBytes(0);
+	boxSize++;
+	boxSize = swap_endian(boxSize);
+	mapRootLevelTempCos.WriteRaw(&boxSize, 4);
+	boxSize = swap_endian(boxSize);
+	mapRootLevelTempCos.WriteTag(OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kLeftFieldNumber << 3);
+	mapRootLevelTempCos.WriteVarint32(0);
+	mapRootLevelTempCos.WriteTag(OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kRightFieldNumber << 3);
+	mapRootLevelTempCos.WriteVarint32(((overallBoundingRectangle.rightInt32 - r2.rightInt32) << 1) | 1); //It should be subtracted the other way but this way it's positive without using abs()
+	mapRootLevelTempCos.WriteTag(OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kTopFieldNumber << 3);
+	mapRootLevelTempCos.WriteVarint32((r2.topInt32 - overallBoundingRectangle.topInt32) << 1);
+	mapRootLevelTempCos.WriteTag(OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kBottomFieldNumber << 3);
+	mapRootLevelTempCos.WriteVarint32(0);
+	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kShiftToMapDataFieldNumber << 3) | 6);
+	//cout << endl << "boxSize=" << boxSize;
+	boxSize++;
+
+	/*This should be
+		[current boxSize_without_tag_and_fixed32size] +
+		[all future boxes with tag and fixed32 size] +
+		[sizes of any undesired MapDataBlocks + tag and varint size] +
+		[desired box's tag]
+	so the offset is from MapDataBox.left_tag to MapDataBlock.varint_size*/
+	//This line skips the MapDataBoxes
+	shiftToMapData = boxSize + 1 + 4 + boxSizes[3] + 1 /* Skip the MapDataBlock tag */;
+	//This line skips the MapDataBlocks
+	//TODO: Investigate this if we start getting out-of-bounds or size errors
+	shiftToMapData += getVarintRequiredBytes(block0Size) + block0Size + 1 + getVarintRequiredBytes(block1Size) + block1Size;
+	shiftToMapData = swap_endian(shiftToMapData);
+	mapRootLevelTempCos.WriteRaw(&shiftToMapData, 4); //shiftToMapData
+
+	//Bottom-right
+	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kBoxesFieldNumber << 3) | 6);
+	boxSize = 0;
+	boxSize += 4;
+	boxSize++;
+	boxSize += getVarintRequiredBytes((r3.leftInt32 - overallBoundingRectangle.leftInt32) << 1);
+	boxSize++;
+	boxSize += getVarintRequiredBytes(0);
+	boxSize++;
+	boxSize += getVarintRequiredBytes((r3.topInt32 - overallBoundingRectangle.topInt32) << 1);
+	boxSize++;
+	boxSize += getVarintRequiredBytes(0);
+	boxSize++;
+	boxSize = swap_endian(boxSize);
+	mapRootLevelTempCos.WriteRaw(&boxSize, 4);
+	boxSize = swap_endian(boxSize);
+	mapRootLevelTempCos.WriteTag(OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kLeftFieldNumber << 3);
+	mapRootLevelTempCos.WriteVarint32((r3.leftInt32 - overallBoundingRectangle.leftInt32) << 1);
+	mapRootLevelTempCos.WriteTag(OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kRightFieldNumber << 3);
+	mapRootLevelTempCos.WriteVarint32(0);
+	mapRootLevelTempCos.WriteTag(OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kTopFieldNumber << 3);
+	mapRootLevelTempCos.WriteVarint32((r3.topInt32 - overallBoundingRectangle.topInt32) << 1);
+	mapRootLevelTempCos.WriteTag(OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kBottomFieldNumber << 3);
+	mapRootLevelTempCos.WriteVarint32(0);
+	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kShiftToMapDataFieldNumber << 3) | 6);
+	//cout << endl << "boxSize=" << boxSize;
+	boxSize++;
+
+	/*This should be
+		[current boxSize_without_tag_and_fixed32size] +
+		[all future boxes with tag and fixed32 size] +
+		[sizes of any undesired MapDataBlocks + tag and varint size] +
+		[desired box's tag]
+	so the offset is from MapDataBox.left_tag to MapDataBlock.varint_size*/
+	//This line skips the MapDataBoxes
+	shiftToMapData = boxSize + 1 /* Skip the MapDataBlock tag */;
+	//This line skips the MapDataBlocks
+	//TODO: Investigate this if we start getting out-of-bounds or size errors
+	shiftToMapData += getVarintRequiredBytes(block0Size) + block0Size + 1 + getVarintRequiredBytes(block1Size) + block1Size + 1 + getVarintRequiredBytes(block2Size) + block2Size;
+	shiftToMapData = swap_endian(shiftToMapData);
+	mapRootLevelTempCos.WriteRaw(&shiftToMapData, 4); //shiftToMapData
+	
+	//Write the MapDataBlocks
+	//We should delete the temp files as we copy them to save space
+	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kBlocksFieldNumber << 3) | 2);
+	mapRootLevelTempCos.WriteVarint32(block0Size);
+	copyRawFileIntoCodedOutputStream(mapRootLevelTempCos, "mapDataBlock0.tmp", block0Size);
+	if (!shouldKeepTempFiles) remove("mapDataBlock0.tmp");
+
+	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kBlocksFieldNumber << 3) | 2);
+	mapRootLevelTempCos.WriteVarint32(block1Size);
+	copyRawFileIntoCodedOutputStream(mapRootLevelTempCos, "mapDataBlock1.tmp", block1Size);
+	if (!shouldKeepTempFiles) remove("mapDataBlock1.tmp");
+
+	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kBlocksFieldNumber << 3) | 2);
+	mapRootLevelTempCos.WriteVarint32(block2Size);
+	copyRawFileIntoCodedOutputStream(mapRootLevelTempCos, "mapDataBlock2.tmp", block2Size);
+	if (!shouldKeepTempFiles) remove("mapDataBlock2.tmp");
+
+	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kBlocksFieldNumber << 3) | 2);
+	mapRootLevelTempCos.WriteVarint32(block3Size);
+	copyRawFileIntoCodedOutputStream(mapRootLevelTempCos, "mapDataBlock3.tmp", block3Size);
+	if (!shouldKeepTempFiles) remove("mapDataBlock3.tmp");
+}
+void writeOsmAndStructure_mapIndex_levels_block_ThreadWorker(void *param) {
+	MapDataBlockThreadInfo *ptr = (MapDataBlockThreadInfo*)param;
+	writeOsmAndStructure_mapIndex_levels_block(ptr->tempFilename, ptr->rectangle, ptr->dbConnection, ptr->stmt, ptr->threadID, ptr->coordinatesByteArrayPtrWithinThread, ptr->typesByteArrayPtrWithinThread, ptr->additionalTypesByteArrayPtrWithinThread, ptr->stringNamesByteArrayPtrWithinThread);
 }
 
-void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRectangle *rectangle, sqlite3 *dbConnection, sqlite3_stmt *stmt, unsigned char *coordinatesByteArrayPtrWithinThread, unsigned char *typesByteArrayPtrWithinThread, unsigned char *additionalTypesByteArrayPtrWithinThread, unsigned char *stringNamesByteArrayPtrWithinThread) {
+void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRectangle *rectangle, sqlite3 *dbConnection, sqlite3_stmt *stmt, int threadID, unsigned char *coordinatesByteArrayPtrWithinThread, unsigned char *typesByteArrayPtrWithinThread, unsigned char *additionalTypesByteArrayPtrWithinThread, unsigned char *stringNamesByteArrayPtrWithinThread) {
 	remove(tempFilename.c_str());
 	ofstream mapDataBlockTemp(tempFilename, ios::binary);
 	google::protobuf::io::OstreamOutputStream mapDataBlockTempOstream(&mapDataBlockTemp);
@@ -603,7 +874,7 @@ void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRec
 	sqlite3_bind_double(stmt, 6, rectangle->top);
 	sqlite3_bind_double(stmt, 7, rectangle->left);
 	sqlite3_bind_double(stmt, 8, rectangle->right);
-	cout << endl << "Bottom,top,left,right=" << rectangle->bottom << ", " << rectangle->top << ", " << rectangle->left << ", " << rectangle->right << endl;
+	cout << endl << endl << "Bottom,top,left,right=" << rectangle->bottom << ", " << rectangle->top << ", " << rectangle->left << ", " << rectangle->right;
 	if (rc != SQLITE_OK) {
 		cout << endl << "Error while creating the MapDataBlock unique values prepared statement";
 	}
@@ -883,13 +1154,17 @@ void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRec
 	nodeIDIndex--; //This is so it's 0 the first time it's incremented
 	uint64_t nodeID = 0;
 	uint64_t nodeCount = 0;
-	string queryGetOnlyNodesWithTags = "select q1.node_id, q2.lat, q2.lon, q1.key, q1.value, (case when q1.key in (" + TAG_KEYS_HIGH_PRIORITY_WHITELIST + ") then 0 when key in (" + TAG_KEYS_HUMAN_READABLE_WHITELIST + ") then 2 else 1 end) as tagType, (select count(distinct node_id) from node_tags) as nodeIDCount from node_tags q1 left join nodes q2 on q2.node_id=q1.node_id where /*" + TAG_KEYS_BLACKLIST + "*/ lat between ? and ? and lon between ? and ? order by q1.node_id asc, tagType asc, key asc, value asc;";
+	string queryGetOnlyNodesWithTags = "select q1.node_id, q2.lat, q2.lon, q1.key, q1.value, (case when q1.key in (" + TAG_KEYS_HIGH_PRIORITY_WHITELIST + ") then 0 when key in (" + TAG_KEYS_HUMAN_READABLE_WHITELIST + ") then 2 else 1 end) as tagType, (select count(distinct q1.node_id) from node_tags q1 left join nodes q2 on q2.node_id=q1.node_id where lat between ? and ? and lon between ? and ?) as nodeIDCount from node_tags q1 left join nodes q2 on q2.node_id=q1.node_id where /*" + TAG_KEYS_BLACKLIST + "*/ lat between ? and ? and lon between ? and ? order by q1.node_id asc, tagType asc, key asc, value asc;";
 	//cout << endl << queryGetOnlyNodesWithTags;
 	rc = sqlite3_prepare_v2(dbConnection, queryGetOnlyNodesWithTags.c_str(), -1, &stmt, 0);
 	sqlite3_bind_double(stmt, 1, rectangle->bottom);
 	sqlite3_bind_double(stmt, 2, rectangle->top);
 	sqlite3_bind_double(stmt, 3, rectangle->left);
 	sqlite3_bind_double(stmt, 4, rectangle->right);
+	sqlite3_bind_double(stmt, 5, rectangle->bottom);
+	sqlite3_bind_double(stmt, 6, rectangle->top);
+	sqlite3_bind_double(stmt, 7, rectangle->left);
+	sqlite3_bind_double(stmt, 8, rectangle->right);
 	mapData.Clear();
 	coordinatesByteLength = 0;
 	coordinatesCount = 0;
@@ -987,6 +1262,7 @@ void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRec
 	//writeOBFVarint32or64BE(mapDataBlockCos, stringTableSize);
 	mapDataBlockCos.WriteVarint32(stringTableSize);
 	copyRawFileIntoCodedOutputStream(mapDataBlockCos, "mapDataBlockStringTable_" + tempFilename, stringTableSize);
+	if (!shouldKeepTempFiles) remove(string("mapDataBlockStringTable_" + tempFilename).c_str());
 }
 
 void writeMapEncodingRule(string tag, string value, uint32_t minZoom) {

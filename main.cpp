@@ -51,6 +51,7 @@ unsigned char *fileCopyBuffer = nullptr;
 #define PROTOBUF_SERIALIZE_TEMP_BUFFER_SIZE 1048576
 //Multiples of 32 so this is 1024
 #define NODE_BLOCK_OVERLAP 32
+#define IDEAL_BLOCK_MAX_SIZE 750000
 static const char* GET_KEYS_AND_VALUES_SORTED_QUERY = "SELECT key, value, (key in (%HUMAN_READABLE_WHITELIST%) or key like 'addr:%') as human_readable, COUNT(*) p, COUNT(*) OVER () AS total_rows FROM (SELECT key, value FROM node_tags WHERE %MACHINE_READABLE_BLACKLIST% UNION ALL SELECT key, value FROM way_tags WHERE %MACHINE_READABLE_BLACKLIST%) q1 GROUP BY concat(key, \"=\", value) ORDER BY p DESC;";
 static const char* GET_WAY_AND_NODE_KEYS_SORTED_QUERY_BLACKLIST = "select key, count(key) as p, way from (select q1.*, 1 as way from way_tags q1 union all select q2.*, 0 as way from node_tags q2) where key not like 'tiger%' and key not like 'source%' and key not like 'attribution%' and key not like 'nhd%' and key not like 'power%' and key not like 'created_by%' and key not like 'seamark%' and key not like 'gnis%' and key not like 'fid%' and key not like 'fixme%' and key not like 'roof%' group by key order by p desc;";
 static const char* QUERY_GET_UNIQUE_WAY_AND_NODE_TAG_VALUES_BLACKLIST = "select value, count(value) as p, way, count(*) over () from (select q1.*, 1 as way from way_tags q1 left join way_nodes q4 on q4.node_order=1 and q4.way_id=q1.way_id left join nodes q5 on q5.node_id=q4.node_id where q5.lat between ? and ? and q5.lon between ? and ? union all select q2.*, 0 as way from node_tags q2 left join nodes q3 on q3.node_id=q2.node_id where q3.lat between ? and ? and q3.lon between ? and ?) where key not like 'tiger%' and key not like 'source%' and key not like 'attribution%' and key not like 'nhd%' and key not like 'power%' and key not like 'created_by%' and key not like 'seamark%' and key not like 'gnis%' and key not like 'fid%' and key not like 'fixme%' and key not like 'roof%' group by value order by p desc;";
@@ -67,6 +68,13 @@ static unordered_map<string, uint32_t> keyMap;
 
 uint32_t getSInt32FromInt32(int32_t i) {
 	return (abs(i) << 1) | (i < 0 ? 1 : 0);
+}
+
+unsigned int getClosestNextLowerPowerOf2(unsigned int i) {
+	unsigned int j = 0;
+	unsigned int retVal = 0;
+	while ((2 << retVal) <= i) retVal++;
+	return retVal;
 }
 
 class BoundingRectangle {
@@ -156,6 +164,8 @@ static sqlite3 *db;
 static sqlite3_stmt *res;
 static string databaseFilename = "";
 static bool shouldKeepTempFiles = false;
+static bool shouldForceSingleSplit = false;
+static unsigned int forcedSingleSplitPowerOf2 = 0;
 
 struct SQLite3StatementDeleter {
 	void operator()(sqlite3_stmt* stmt) const {
@@ -201,6 +211,11 @@ int main(int argc, char** argv) {
 
 			if ((arg_view == "-keep-temp-files"sv || arg_view == "--keep-temp-files"sv || arg_view == "-keep_temp_files"sv || arg_view == "--keep_temp_files"sv || arg_view == "/keep-temp-files" || arg_view == "/keep_temp_files")) {
 				shouldKeepTempFiles = true;
+			}
+			
+			if ((arg_view == "-force-single-split"sv || arg_view == "--force-single-split"sv || arg_view == "/force-single-split"sv) && i < (argc - 1)) {
+				shouldForceSingleSplit = true;
+				forcedSingleSplitPowerOf2 = atoi(argv[i + 1]);
 			}
 		}
 	}
@@ -336,7 +351,14 @@ uint64_t writeMapIndex(string name) {
 
 	//MapIndex.levels
 	mapIndexCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::kLevelsFieldNumber << 3) | 6);
-	writeOsmAndStructure_mapIndex_detailed_level_single_power_of_2_split(4);
+	unsigned int powerOf2Split = 1; //Start with 2x2 by default
+	if (shouldForceSingleSplit) {
+		powerOf2Split = forcedSingleSplitPowerOf2;
+	} else {
+		//Automatically find a good split value
+		powerOf2Split = getClosestNextLowerPowerOf2(max(overallBoundingRectangle.widthInt32 / IDEAL_BLOCK_MAX_SIZE, overallBoundingRectangle.heightInt32 / IDEAL_BLOCK_MAX_SIZE)); //Default to a bigger split (fewer blocks)
+	}
+	writeOsmAndStructure_mapIndex_detailed_level_single_power_of_2_split(powerOf2Split);
 	int64_t mapRootLevelSize = getFileSize(L"mapRootLevel");
 	writeOBFVarint32or64BE(mapIndexCos, mapRootLevelSize);
 	//cout << endl << "mapRootLevel size = " << mapRootLevelSize;
@@ -485,7 +507,7 @@ void writeOsmAndStructure_mapIndex_detailed_level_single_power_of_2_split(int po
 
 	int splitSectionCount = 1 << pow2;
 	int totalBoxCount = 1 << (pow2 << 1);
-	cout << endl << "Using single " << splitSectionCount << "x" << splitSectionCount << " split (" << totalBoxCount << " boxes)";
+	cout << endl << "Using " << (shouldForceSingleSplit ? "user-defined" : "automatic") << " single " << splitSectionCount << "x" << splitSectionCount << " split (" << totalBoxCount << " box" << (totalBoxCount == 1 ? "" : "es") << ")";
 
 	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kMaxZoomFieldNumber << 3));
 	mapRootLevelTempCos.WriteVarint32(26);

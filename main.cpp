@@ -38,7 +38,7 @@ uint64_t GetSystemTimeAsUnixTime();
 static inline int32_t latitudeToInt32(double latitude, uint32_t zoom);
 static inline int32_t longitudeToInt32(double longitude, uint32_t zoom);
 void writeOsmAndStructure_mapIndex_detailed_level_1x1(unsigned char *coordinatesByteArrayPtrWithinThread, unsigned char *typesByteArrayPtrWithinThread, unsigned char *additionalTypesByteArrayPtrWithinThread, unsigned char *stringNamesByteArrayPtrWithinThread);
-void writeOsmAndStructure_mapIndex_detailed_level_single_power_of_2_split(int pow2);
+void writeOsmAndStructure_mapIndex_detailed_level_single_power_of_2_split(int pow2, bool mediumZoom);
 void writeOsmAndStructure_mapIndex_detailed_level_4_4_pow2_split(int pow2);
 double int32ToLatitude(uint64_t in, uint32_t zoom);
 double int32ToLongitude(uint64_t in, uint32_t zoom);
@@ -48,6 +48,8 @@ static inline int min3(int64_t a, int64_t b, int64_t c);
 void writeOsmAndStructure_mapIndex_levels_block_SingleSplitThreadWorker(void *param);
 LRESULT CALLBACK WndProc(HWND hwndMainWin, UINT msg, WPARAM wParam, LPARAM lParam);
 bool CALLBACK SetFont(HWND child, LPARAM font);
+void VWSimplify(vector<uint64_t> *nodeIDVector, vector<uint64_t> *latVector, vector<uint64_t> *lonVector, uint64_t minAreaX2);
+string humanReadableTimeFromSeconds(unsigned int seconds);
 
 #define FILE_COPY_BUFFER_SIZE (32 * 1048576) //This needs the parentheses or it will evaluate the numbers separately
 #define PI 3.1415926535
@@ -58,8 +60,9 @@ unsigned char *fileCopyBuffer = nullptr;
 #define IDEAL_BLOCK_MAX_SIZE 750000
 static const char* GET_KEYS_AND_VALUES_SORTED_QUERY = "SELECT key, value, (key in (%HUMAN_READABLE_WHITELIST%) or key like 'addr:%') as human_readable, COUNT(*) p, COUNT(*) OVER () AS total_rows FROM (SELECT key, value FROM node_tags WHERE %MACHINE_READABLE_BLACKLIST% UNION ALL SELECT key, value FROM way_tags WHERE %MACHINE_READABLE_BLACKLIST%) q1 GROUP BY concat(key, \"=\", value) ORDER BY p DESC;";
 static const char* GET_WAY_AND_NODE_KEYS_SORTED_QUERY_BLACKLIST = "select key, count(key) as p, way from (select q1.*, 1 as way from way_tags q1 union all select q2.*, 0 as way from node_tags q2) where key not like 'tiger%' and key not like 'source%' and key not like 'attribution%' and key not like 'nhd%' and key not like 'power%' and key not like 'created_by%' and key not like 'seamark%' and key not like 'gnis%' and key not like 'fid%' and key not like 'fixme%' and key not like 'roof%' group by key order by p desc;";
-static const char* QUERY_GET_UNIQUE_WAY_AND_NODE_TAG_VALUES_BLACKLIST = "select value, count(value) as p, way, count(*) over () from (select q1.*, 1 as way from way_tags q1 inner join way_nodes q4 on q4.node_order=1 and q4.way_id=q1.way_id inner join rtree_node q5 on q5.node_id=q4.node_id where (q5.min_lat between :bottom and :top or q5.max_lat between :bottom and :top or (q5.min_lat <= :bottom and q5.max_lat >= :top)) and (q5.min_lon between :left and :right or q5.max_lon between :left and :right or (q5.min_lon <= :left and q5.max_lon >= :right)) union all select q2.*, 0 as way from node_tags q2 inner join rtree_node q3 on q3.node_id=q2.node_id where (q3.min_lat between :bottom and :top or q3.max_lat between :bottom and :top or (q3.min_lat <= :bottom and q3.max_lat >= :top)) and (q3.min_lon between :left and :right or q3.max_lon between :left and :right or (q3.min_lon <= :left and q3.max_lon >= :right))) where key not like 'tiger%' and key not like 'source%' and key not like 'attribution%' and key not like 'nhd%' and key not like 'power%' and key not like 'created_by%' and key not like 'seamark%' and key not like 'gnis%' and key not like 'fid%' and key not like 'fixme%' and key not like 'roof%' group by value order by p desc;";
-static const char* QUERY_GET_MEDIAN_UNIQUE_ID = "select * from (select *, count(*) over () as p from (select q1.way_id as id from way_nodes q1 inner join rtree_node q2 on q2.node_id=q1.node_id where q1.node_order=1 and (q2.min_lat between :bottom and :top or q2.max_lat between :bottom and :top or (q2.min_lat <= :bottom and q2.max_lat >= :top)) AND (q2.min_lon between :left and :right or q2.max_lon between :left and :right or (q2.min_lon <= :left and q2.max_lon >= :right)) union all select node_id as id from rtree_node q4 where (q4.min_lat between :bottom and :top or q4.max_lat between :bottom and :top or (q4.min_lat <= :bottom and q4.max_lat >= :top)) AND (q4.min_lon between :left and :right or q4.max_lon between :left and :right or (q4.min_lon <= :left and q4.max_lon >= :right))) order by id asc) limit 1 offset ((select count(distinct id)/2 as p from (select q1.way_id as id from way_nodes q1 inner join rtree_node q2 on q2.node_id=q1.node_id where q1.node_order=1 and (q2.min_lat between :bottom and :top or q2.max_lat between :bottom and :top or (q2.min_lat <= :bottom and q2.max_lat >= :top)) AND (q2.min_lon between :left and :right or q2.max_lon between :left and :right or (q2.min_lon <= :left and q2.max_lon >= :right)) union all select node_id as id from rtree_node q4 where (q4.min_lat between :bottom and :top or q4.max_lat between :bottom and :top or (q4.min_lat <= :bottom and q4.max_lat >= :top)) AND (q4.min_lon between :left and :right or q4.max_lon between :left and :right or (q4.min_lon <= :left and q4.max_lon >= :right)))));";
+static const char* QUERY_GET_UNIQUE_WAY_AND_NODE_TAG_VALUES_BLACKLIST = "select value, count(value) as p, way, count(*) over () from (select q1.*, 1 as way from way_tags q1 inner join way_nodes q4 on q4.node_order=1 and q4.way_id=q1.way_id inner join rtree_node q5 on q5.node_id=q4.node_id where (q5.max_lat >= :bottom and q5.min_lat <= :top) and (q5.max_lon >= :left and q5.min_lon <= :right) union all select q2.*, 0 as way from node_tags q2 inner join rtree_node q3 on q3.node_id=q2.node_id where (q3.max_lat >= :bottom and q3.min_lat <= :top) and (q3.max_lon >= :left and q3.min_lon <= :right)) where key not like 'tiger%' and key not like 'source%' and key not like 'attribution%' and key not like 'nhd%' and key not like 'power%' and key not like 'created_by%' and key not like 'seamark%' and key not like 'gnis%' and key not like 'fid%' and key not like 'fixme%' and key not like 'roof%' group by value order by p desc;";
+static const char* QUERY_GET_MEDIAN_UNIQUE_ID = "select median(id)/*, count(*) over () as p*/ from (select q1.way_id as id from way_nodes q1 inner join rtree_node q2 on q2.node_id=q1.node_id where q1.node_order=1 and (q2.max_lat >= :bottom and q2.min_lat <= :top) and (q2.max_lon >= :left and q2.min_lon <= :right) union all select node_id as id from rtree_node q4 where (q4.max_lat >= :bottom and q4.min_lat <= :top) and (q4.max_lon >= :left and q4.min_lon <= :right));";
+static const char* QUERY_GET_UNIQUE_WAY_AND_NODE_TAG_VALUES_BLACKLIST_MEDIUM_ZOOM = "select value, count(value) as p, way, count(*) over () from (select q1.*, 1 as way from way_tags q1 inner join way_nodes q4 on q4.node_order=1 and q4.way_id=q1.way_id inner join rtree_node q5 on q5.node_id=q4.node_id where (q5.max_lat >= :bottom and q5.min_lat <= :top) and (q5.max_lon >= :left and q5.min_lon <= :right) union all select q2.*, 0 as way from node_tags q2 inner join rtree_node q3 on q3.node_id=q2.node_id where (q3.max_lat >= :bottom and q3.min_lat <= :top) and (q3.max_lon >= :left and q3.min_lon <= :right)) where way_id in (select q1.way_id from (select q1.way_id from way_nodes q1 inner join rtree_node q2 on q2.node_id=q1.node_id inner join way_tags q3 on q3.way_id=q1.way_id where q1.node_order=1 and (q2.max_lat >= :bottom and q2.min_lat <= :top) and (q2.max_lon >= :left and q2.min_lon <= :right) and ((key = 'highway' and value in ('motorway', 'motorway_link', 'motorway_junction', 'primary', 'primary_link', 'secondary', 'secondary_link', 'tertiary', 'tertiary_link', 'trunk', 'trunk_link')) or (key in ('lanes', 'lanes:forward', 'lanes:backward', 'hgv', 'maxspeed', 'oneway', 'destination', 'motorway_link')))) q1) and ((key = 'highway' and value in ('motorway', 'motorway_link', 'motorway_junction', 'primary', 'primary_link', 'secondary', 'secondary_link', 'tertiary', 'tertiary_link', 'trunk', 'trunk_link')) or (key in ('lanes', 'lanes:forward', 'lanes:backward', 'hgv', 'maxspeed', 'oneway', 'name', 'ref', 'destination', 'motorway_link'))) group by value order by p desc;";
 static const char* QUERY_GET_WAY_NODES = "select q1.*, lag(q1.lat, 1) over () as prevLat, lag(q1.lon, 1) over () as prevLon, row_number() over (partition by q1.way_id order by way_id asc, node_order asc) as index_within_way from ( select way_id, q1.node_id, node_order, lat, lon from way_nodes q1 left join nodes q2 on q1.node_id=q2.node_id order by way_id asc, node_order asc) q1 WHERE lat is not null AND lon is not null /*and way_id=1527655305*/;";
 static const char* QUERY_GET_WAY_TAGS = "select q1.key, q1.value, (case when q1.key in (%HIGH_PRIORITY_WHITELIST%) then 0 when key in (%HUMAN_READABLE_WHITELIST%) then 2 else 1 end) as tagType from way_tags q1 where %MACHINE_READABLE_BLACKLIST% %WAY_ID% group by key, value order by tagType asc, key asc, value asc;";
 static const char* QUERY_GET_NODE_TAGS_MACHINE_READABLE = "select concat(q1.key, '=', q1.value) as tag, (case when q1.key in (%HIGH_PRIORITY_WHITELIST%) then 1 else 0 end) as high_priority from node_tags q1 where %KEY_BLACKLIST% and node_id=%NODE_ID% group by key, value order by high_priority desc, key asc, value asc";
@@ -169,10 +172,11 @@ struct MapDataBlockThreadInfo {
 	unsigned char *typesByteArrayPtrWithinThread;
 	unsigned char *additionalTypesByteArrayPtrWithinThread;
 	unsigned char *stringNamesByteArrayPtrWithinThread;
-	MapDataBlockThreadInfo():tempFilename(""),rectangles(nullptr),rectanglesCount(0),rectanglesStartIdx(0),stride(0),dbConnection(nullptr),stmt(nullptr),threadID(0),coordinatesByteArrayPtrWithinThread(nullptr),typesByteArrayPtrWithinThread(nullptr),additionalTypesByteArrayPtrWithinThread(nullptr),stringNamesByteArrayPtrWithinThread(nullptr){}
+	bool mediumZoom;
+	MapDataBlockThreadInfo():tempFilename(""),rectangles(nullptr),rectanglesCount(0),rectanglesStartIdx(0),stride(0),dbConnection(nullptr),stmt(nullptr),threadID(0),coordinatesByteArrayPtrWithinThread(nullptr),typesByteArrayPtrWithinThread(nullptr),additionalTypesByteArrayPtrWithinThread(nullptr),stringNamesByteArrayPtrWithinThread(nullptr),mediumZoom(false){}
 };
 
-void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRectangle *rectangle, sqlite3 *dbConnection, sqlite3_stmt *stmt, int threadID, unsigned char *coordinatesByteArrayPtrWithinThread, unsigned char *typesByteArrayPtrWithinThread, unsigned char *additionalTypesByteArrayPtrWithinThread, unsigned char *stringNamesByteArrayPtrWithinThread);
+void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRectangle *rectangle, sqlite3 *dbConnection, sqlite3_stmt *stmt, int threadID, unsigned char *coordinatesByteArrayPtrWithinThread, unsigned char *typesByteArrayPtrWithinThread, unsigned char *additionalTypesByteArrayPtrWithinThread, unsigned char *stringNamesByteArrayPtrWithinThread, bool mediumZoom);
 
 template <typename T>
 T swap_endian(T u) {
@@ -210,7 +214,7 @@ struct SQLite3StatementDeleter {
 };
 
 int main(int argc, char** argv) {
-	cout << "OsmAndMapCreator++ v0.1.4" << endl;
+	cout << "OsmAndMapCreator++ v0.1.5" << endl;
 
 	uint64_t overallStartTime = GetSystemTimeAsUnixTime();
 
@@ -251,7 +255,7 @@ int main(int argc, char** argv) {
 				forcedSingleSplitPowerOf2 = atoi(argv[i + 1]);
 			}
 			
-			if ((arg_view == "-quiet"sv || arg_view == "--quiet"sv || arg_view == "/quiet"sv) && i < (argc - 1)) {
+			if ((arg_view == "-quiet"sv || arg_view == "--quiet"sv || arg_view == "/quiet"sv)) {
 				quiet = true;
 			}
 		}
@@ -381,7 +385,8 @@ int main(int argc, char** argv) {
 	cin >> tmp;*/
 
 	uint64_t overallEndTime = GetSystemTimeAsUnixTime();
-	cout << endl << "Finished in " << ((overallEndTime - overallStartTime) / 1000.0) << " seconds";
+	double finishedSeconds = (overallEndTime - overallStartTime) / 1000.0;
+	cout << endl << "Finished in " << (finishedSeconds < 10 ? to_string(finishedSeconds) + " seconds" : humanReadableTimeFromSeconds(finishedSeconds));
 	return 0;
 }
 
@@ -445,7 +450,7 @@ bool CALLBACK SetFont(HWND child, LPARAM font) {
 }
 
 void printHelp() {
-	cout << "OsmAndMapCreator++ version 0.1.4";
+	cout << "OsmAndMapCreator++ version 0.1.5";
 	cout << endl << endl << "This utility generates OBF map files for OsmAnd from an OpenStreetMap SQLite database";
 	cout << endl << endl << "Usage:";
 	cout << endl << "\t-i [path]\t\tInput filename (required)";
@@ -481,8 +486,21 @@ uint64_t writeMapIndex(string name) {
 		//Automatically find a good split value
 		powerOf2Split = getClosestNextLowerPowerOf2(max(overallBoundingRectangle.widthInt32 / IDEAL_BLOCK_MAX_SIZE, overallBoundingRectangle.heightInt32 / IDEAL_BLOCK_MAX_SIZE)); //Default to a bigger split (fewer blocks)
 	}
-	writeOsmAndStructure_mapIndex_detailed_level_single_power_of_2_split(powerOf2Split);
+	writeOsmAndStructure_mapIndex_detailed_level_single_power_of_2_split(powerOf2Split, false /* detailed zoom */);
 	int64_t mapRootLevelSize = getFileSize(L"mapRootLevel");
+	writeOBFVarint32or64BE(mapIndexCos, mapRootLevelSize);
+	//cout << endl << "mapRootLevel size = " << mapRootLevelSize;
+	copyRawFileIntoCodedOutputStream(mapIndexCos, "mapRootLevel", mapRootLevelSize);
+	if (!shouldKeepTempFiles) remove("mapRootLevel");
+	
+	mapIndexCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::kLevelsFieldNumber << 3) | 6);
+	if (powerOf2Split >= 4) {
+		powerOf2Split -= 3;
+	} else if (powerOf2Split >= 3) {
+		powerOf2Split -= 2;
+	}
+	writeOsmAndStructure_mapIndex_detailed_level_single_power_of_2_split(powerOf2Split, true /* medium zoom */);
+	mapRootLevelSize = getFileSize(L"mapRootLevel");
 	writeOBFVarint32or64BE(mapIndexCos, mapRootLevelSize);
 	//cout << endl << "mapRootLevel size = " << mapRootLevelSize;
 	copyRawFileIntoCodedOutputStream(mapIndexCos, "mapRootLevel", mapRootLevelSize);
@@ -509,7 +527,7 @@ void writeOsmAndStructure_mapIndex_rules(google::protobuf::io::CodedOutputStream
 	r.Clear();
 	r.set_tag("object_type");
 	r.set_value("node");
-	r.set_minzoom(15);
+	r.set_minzoom(5);
 	r.set_type(1);
 	cos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::kRulesFieldNumber << 3) | 2);
 	cos.WriteVarint32(r.ByteSizeLong());
@@ -517,7 +535,7 @@ void writeOsmAndStructure_mapIndex_rules(google::protobuf::io::CodedOutputStream
 	r.Clear();
 	r.set_tag("osmand_highway_integrity");
 	r.set_value("4");
-	r.set_minzoom(15);
+	r.set_minzoom(5);
 	r.set_type(1);
 	cos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::kRulesFieldNumber << 3) | 2);
 	cos.WriteVarint32(r.ByteSizeLong());
@@ -550,7 +568,7 @@ void writeOsmAndStructure_mapIndex_rules(google::protobuf::io::CodedOutputStream
 		}
 
 		r.set_tag(key);
-		r.set_minzoom(15);
+		r.set_minzoom(5);
 		cos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::kRulesFieldNumber << 3) | 2);
 		cos.WriteVarint32(r.ByteSizeLong());
 		r.SerializeToCodedStream(&cos);
@@ -614,7 +632,7 @@ void writeOsmAndStructure_mapIndex_detailed_level_1x1(unsigned char *coordinates
 
 	//MapRootLevel.blocks
 	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kBlocksFieldNumber << 3) | 2);
-	writeOsmAndStructure_mapIndex_levels_block("mapDataBlock", &overallBoundingRectangle, db, res, 0, coordinatesByteArrayPtrWithinThread, typesByteArrayPtrWithinThread, additionalTypesByteArrayPtrWithinThread, stringNamesByteArrayPtrWithinThread);
+	writeOsmAndStructure_mapIndex_levels_block("mapDataBlock", &overallBoundingRectangle, db, res, 0, coordinatesByteArrayPtrWithinThread, typesByteArrayPtrWithinThread, additionalTypesByteArrayPtrWithinThread, stringNamesByteArrayPtrWithinThread, false);
 	uint64_t mapDataBlockSize = getFileSize(L"mapDataBlock");
 	mapRootLevelTempCos.WriteVarint32(mapDataBlockSize);
 	copyRawFileIntoCodedOutputStream(mapRootLevelTempCos, "mapDataBlock", mapDataBlockSize);
@@ -622,7 +640,7 @@ void writeOsmAndStructure_mapIndex_detailed_level_1x1(unsigned char *coordinates
 }
 
 //OsmAndMapIndex.MapRootLevel
-void writeOsmAndStructure_mapIndex_detailed_level_single_power_of_2_split(int pow2) {
+void writeOsmAndStructure_mapIndex_detailed_level_single_power_of_2_split(int pow2, bool mediumZoom) {
 	remove("mapRootLevel");
 	ofstream mapRootLevelTemp("mapRootLevel", ios::binary);
 	google::protobuf::io::OstreamOutputStream mapRootLevelTempOstream(&mapRootLevelTemp);
@@ -633,9 +651,9 @@ void writeOsmAndStructure_mapIndex_detailed_level_single_power_of_2_split(int po
 	cout << endl << "Using " << (shouldForceSingleSplit ? "user-defined" : "automatic") << " single " << splitSectionCount << "x" << splitSectionCount << " split (" << totalBoxCount << " box" << (totalBoxCount == 1 ? "" : "es") << ")";
 
 	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kMaxZoomFieldNumber << 3));
-	mapRootLevelTempCos.WriteVarint32(26);
+	mapRootLevelTempCos.WriteVarint32(mediumZoom ? 14 : 26);
 	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kMinZoomFieldNumber << 3));
-	mapRootLevelTempCos.WriteVarint32(15);
+	mapRootLevelTempCos.WriteVarint32(mediumZoom ? 5 : 15);
 	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kLeftFieldNumber << 3));
 	mapRootLevelTempCos.WriteVarint32(overallBoundingRectangle.leftInt32);
 	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kRightFieldNumber << 3));
@@ -661,7 +679,7 @@ void writeOsmAndStructure_mapIndex_detailed_level_single_power_of_2_split(int po
 			rectangles[(y * splitSectionCount) + x].topInt32 = (overallBoundingRectangle.topInt32 + (y * singleBoxHeight)) - NODE_BLOCK_OVERLAP;
 			rectangles[(y * splitSectionCount) + x].bottomInt32 = (rectangles[(y * splitSectionCount) + x].topInt32 + singleBoxHeight + NODE_BLOCK_OVERLAP);
 			rectangles[(y * splitSectionCount) + x].calculateDoubleValuesFromInt32();
-			rectangles[(y * splitSectionCount) + x].expandByPercent(5);
+			rectangles[(y * splitSectionCount) + x].expandByAbsoluteValue(40000); //40000 * 1/20 foot (2000 feet)
 			rectangles[(y * splitSectionCount) + x].calculateMapDataBoxBytesSizeWithoutTagAndFixed32Size(&overallBoundingRectangle);
 			//cout << endl << "Rectangle " << (((y * splitSectionCount) + x) + 1) << " left, right, top, bottom:\t" << rectangles[(y * splitSectionCount) + x].left << ", " << rectangles[(y * splitSectionCount) + x].right << ", " << rectangles[(y * splitSectionCount) + x].top << ", " << rectangles[(y * splitSectionCount) + x].bottom;
 		}
@@ -720,6 +738,7 @@ void writeOsmAndStructure_mapIndex_detailed_level_single_power_of_2_split(int po
 		threadInfo[i].typesByteArrayPtrWithinThread = typesByteArrayUniquePtrArrayForThreads[i].get();
 		threadInfo[i].additionalTypesByteArrayPtrWithinThread = additionalTypesByteArrayUniquePtrArrayForThreads[i].get();
 		threadInfo[i].stringNamesByteArrayPtrWithinThread = stringNamesByteArrayUniquePtrArrayForThreads[i].get();
+		threadInfo[i].mediumZoom = mediumZoom;
 		threadHandles[i] = _beginthread(writeOsmAndStructure_mapIndex_levels_block_SingleSplitThreadWorker, 0, &threadInfo[i]);
 	}
 	
@@ -902,7 +921,7 @@ void writeOsmAndStructure_mapIndex_detailed_level_4_4_pow2_split(int pow2) {
 			rectangles[(y * splitSectionCount) + x].topInt32 = (overallBoundingRectangle.topInt32 + (y * singleBoxHeight)) - NODE_BLOCK_OVERLAP;
 			rectangles[(y * splitSectionCount) + x].bottomInt32 = (rectangles[(y * splitSectionCount) + x].topInt32 + singleBoxHeight + NODE_BLOCK_OVERLAP);
 			rectangles[(y * splitSectionCount) + x].calculateDoubleValuesFromInt32();
-			rectangles[(y * splitSectionCount) + x].expandByPercent(15);
+			rectangles[(y * splitSectionCount) + x].expandByAbsoluteValue(40000);
 			rectangles[(y * splitSectionCount) + x].calculateMapDataBoxBytesSizeWithoutTagAndFixed32Size(&overallBoundingRectangle);
 			//cout << endl << "Rectangle " << (((y * splitSectionCount) + x) + 1) << " left, right, top, bottom:\t" << rectangles[(y * splitSectionCount) + x].left << ", " << rectangles[(y * splitSectionCount) + x].right << ", " << rectangles[(y * splitSectionCount) + x].top << ", " << rectangles[(y * splitSectionCount) + x].bottom;
 		}
@@ -1081,18 +1100,18 @@ void writeOsmAndStructure_mapIndex_levels_block_SingleSplitThreadWorker(void *pa
 	for (int i = 0; i < ptr->rectanglesCount; i++) {
 		int blockIdx = (i * 4) + ptr->threadID;
 		if (blockIdx >= ptr->rectanglesCount) break;
-		writeOsmAndStructure_mapIndex_levels_block(string("mapDataBlock" + to_string(blockIdx) + ".tmp"), &ptr->rectangles[blockIdx], ptr->dbConnection, ptr->stmt, ptr->threadID, ptr->coordinatesByteArrayPtrWithinThread, ptr->typesByteArrayPtrWithinThread, ptr->additionalTypesByteArrayPtrWithinThread, ptr->stringNamesByteArrayPtrWithinThread);
+		writeOsmAndStructure_mapIndex_levels_block(string("mapDataBlock" + to_string(blockIdx) + ".tmp"), &ptr->rectangles[blockIdx], ptr->dbConnection, ptr->stmt, ptr->threadID, ptr->coordinatesByteArrayPtrWithinThread, ptr->typesByteArrayPtrWithinThread, ptr->additionalTypesByteArrayPtrWithinThread, ptr->stringNamesByteArrayPtrWithinThread, ptr->mediumZoom);
 	}
 }
 
-void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRectangle *rectangle, sqlite3 *dbConnection, sqlite3_stmt *stmt, int threadID, unsigned char *coordinatesByteArrayPtrWithinThread, unsigned char *typesByteArrayPtrWithinThread, unsigned char *additionalTypesByteArrayPtrWithinThread, unsigned char *stringNamesByteArrayPtrWithinThread) {
+void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRectangle *rectangle, sqlite3 *dbConnection, sqlite3_stmt *stmt, int threadID, unsigned char *coordinatesByteArrayPtrWithinThread, unsigned char *typesByteArrayPtrWithinThread, unsigned char *additionalTypesByteArrayPtrWithinThread, unsigned char *stringNamesByteArrayPtrWithinThread, bool mediumZoom) {
 	remove(tempFilename.c_str());
 	ofstream mapDataBlockTemp(tempFilename, ios::binary);
 	google::protobuf::io::OstreamOutputStream mapDataBlockTempOstream(&mapDataBlockTemp);
 	google::protobuf::io::CodedOutputStream mapDataBlockCos(&mapDataBlockTempOstream);
 	
 	bool shouldSkipBlock = false;
-	int rc = sqlite3_prepare_v2(dbConnection, "select sum(c) from (select exists(select * from rtree_node q1 inner join node_tags q2 on q2.node_id=q1.node_id where (min_lon between :left and :right or max_lon between :left and :right or (min_lon <= :left and max_lon >= :right)) and (min_lat between :bottom and :top or max_lat between :bottom and :top or (min_lat <= :bottom and max_lat >= :top))) as c union all select exists(select * from rtree_node q1 inner join way_nodes q3 on q3.node_id=q1.node_id where q3.node_order=1 and (min_lon between :left and :right or max_lon between :left and :right or (min_lon <= :left and max_lon >= :right)) and (min_lat between :bottom and :top or max_lat between :bottom and :top or (min_lat <= :bottom and max_lat >= :top))) as c)", -1, &stmt, 0);
+	int rc = sqlite3_prepare_v2(dbConnection, "select sum(c) from (select exists(select * from rtree_node q1 inner join node_tags q2 on q2.node_id=q1.node_id where (max_lat >= :bottom and min_lat <= :top) and (max_lon >= :left and min_lon <= :right)) as c union all select exists(select * from rtree_node q1 inner join way_nodes q3 on q3.node_id=q1.node_id where q3.node_order=1 and (max_lat >= :bottom and min_lat <= :top) and (max_lon >= :left and min_lon <= :right)) as c)", -1, &stmt, 0);
 	sqlite3_bind_double(stmt, sqlite3_bind_parameter_index(stmt, ":left"), rectangle->left);
 	sqlite3_bind_double(stmt, sqlite3_bind_parameter_index(stmt, ":right"), rectangle->right);
 	sqlite3_bind_double(stmt, sqlite3_bind_parameter_index(stmt, ":bottom"), rectangle->bottom);
@@ -1162,7 +1181,7 @@ void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRec
 			cout << endl << "Error while getting the median unique ID";
 		}
 		sqlite3_step(stmt);
-		medianUniqueID = sqlite3_column_int64(stmt, 0);
+		medianUniqueID = llround(sqlite3_column_double(stmt, 0));
 		sqlite3_finalize(stmt);
 		stmt = nullptr;
 		if (!quiet) cout << endl << "Median unique ID: " << medianUniqueID;
@@ -1174,7 +1193,11 @@ void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRec
 	if (!shouldSkipBlock) {
 		//Get a list of all the way ID's
 		//Use the first node to see if the way should be included in the current block
-		rc = sqlite3_prepare_v2(dbConnection, "select q1.*, count(*) over () from (select q1.way_id from way_nodes q1 inner join rtree_node q2 on q2.node_id=q1.node_id where q1.node_order=1 and (q2.min_lat between :bottom and :top or q2.max_lat between :bottom and :top or (q2.min_lat <= :bottom and q2.max_lat >= :top)) and (q2.min_lon between :left and :right or q2.max_lon between :left and :right or (q2.min_lon <= :left and q2.max_lon >= :right))) q1 order by way_id asc", -1, &stmt, 0);
+		if (!mediumZoom) {
+			rc = sqlite3_prepare_v2(dbConnection, "select q1.*, count(*) over () from (select distinct q1.way_id from way_nodes q1 inner join rtree_node q2 on q2.node_id=q1.node_id where q1.node_order=1 and (q2.max_lat >= :bottom and q2.min_lat <= :top) and (q2.max_lon >= :left and q2.min_lon <= :right)) q1 order by way_id asc", -1, &stmt, 0);
+		} else {
+			rc = sqlite3_prepare_v2(dbConnection, "select q1.*, count(*) over () from (select distinct q1.way_id from way_nodes q1 inner join rtree_node q2 on q2.node_id=q1.node_id inner join way_tags q3 on q3.way_id=q1.way_id where q1.node_order=1 and (q2.max_lat >= :bottom and q2.min_lat <= :top) and (q2.max_lon >= :left and q2.min_lon <= :right) and ((key = 'highway' and value in ('motorway', 'motorway_link', 'motorway_junction', 'primary', 'primary_link', 'secondary', 'secondary_link', 'tertiary', 'tertiary_link', 'trunk', 'trunk_link')) or (key in ('lanes', 'lanes:forward', 'lanes:backward', 'hgv', 'maxspeed', 'oneway', 'destination', 'motorway_link')))) q1 order by way_id asc", -1, &stmt, 0);
+		}
 		sqlite3_bind_double(stmt, sqlite3_bind_parameter_index(stmt, ":left"), rectangle->left);
 		sqlite3_bind_double(stmt, sqlite3_bind_parameter_index(stmt, ":right"), rectangle->right);
 		sqlite3_bind_double(stmt, sqlite3_bind_parameter_index(stmt, ":bottom"), rectangle->bottom);
@@ -1193,7 +1216,7 @@ void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRec
 		OsmAnd::OBF::MapData mapData;
 		uint64_t way_id, node_id, firstNodeID, node_order, index_within_way;
 		int64_t deltaLat, deltaLon;
-		double lat, lon;
+		int64_t lat, lon;
 		unsigned char *coordinatesByteArrayPtr = coordinatesByteArrayPtrWithinThread;
 		unsigned char *typesByteArrayPtr = typesByteArrayPtrWithinThread;
 		unsigned char *additionalTypesByteArrayPtr = additionalTypesByteArrayPtrWithinThread;
@@ -1207,10 +1230,18 @@ void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRec
 		//Ways
 		uint64_t wayIDIndex = 0;
 		uint64_t latRoundingError, lonRoundingError;
+		vector<uint64_t> nodeIDVector;
+		vector<uint64_t> latVector;
+		vector<uint64_t> lonVector;
+		nodeIDVector.reserve(2048); //Pre-allocate memory for up to 2048 elements. As of 2026/07/06, the longest way in the southeast US data has 1978 nodes
+		latVector.reserve(2048);
+		lonVector.reserve(2048);
 		for (uint64_t wayID : wayIDs) {
-			if (wayIDIndex == 0) cout << endl;
-			if (!quiet && (wayIDs.size() < 1000 || wayIDIndex % 99 == 0)) {
-				cout << "\rWriting way " << (wayIDIndex + 1) << "/" << wayIDs.size() << " (" << ((wayIDIndex + 1) * 100.0) / wayIDs.size() << "%)";
+			if (!quiet) {
+				if (wayIDIndex == 0) cout << endl;
+				if ((wayIDs.size() < 1000 || wayIDIndex % 99 == 0)) {
+					cout << "\rWriting way " << (wayIDIndex + 1) << "/" << wayIDs.size() << " (" << ((wayIDIndex + 1) * 100.0) / wayIDs.size() << "%)";
+				}
 			}
 			string queryGetWayNodes = "select q1.*, row_number() over (partition by q1.way_id order by way_id asc, node_order asc) as index_within_way, count(*) over () as total_nodes from (select way_id, q1.node_id, node_order, lat, lon from way_nodes q1 left join nodes q2 on q1.node_id=q2.node_id) q1 WHERE lat is not null AND lon is not null and way_id=%WAY_ID% order by way_id asc, node_order asc";
 			queryGetWayNodes.replace(queryGetWayNodes.find("%WAY_ID%"), 8, to_string(wayID));
@@ -1225,27 +1256,47 @@ void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRec
 			isArea = false;
 			while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
 				way_id = sqlite3_column_int64(stmt, 0);
-				node_id = sqlite3_column_int64(stmt, 1);
-				node_order = sqlite3_column_int64(stmt, 2);
-				lat = sqlite3_column_double(stmt, 3);
-				lon = sqlite3_column_double(stmt, 4);
-				index_within_way = sqlite3_column_int64(stmt, 5);
+				nodeIDVector.emplace_back(sqlite3_column_int64(stmt, 1));
+				latVector.emplace_back(latitudeToInt32(sqlite3_column_double(stmt, 3), 21));
+				lonVector.emplace_back(longitudeToInt32(sqlite3_column_double(stmt, 4), 21));
+
+				if (sqlite3_column_int64(stmt, 5) /* index_within_way */ == 1) {
+					nodesWithinWay = sqlite3_column_int64(stmt, 6);
+					firstNodeID = node_id;
+				}
+			}
+			sqlite3_finalize(stmt);
+			stmt = nullptr;
+
+			if (mediumZoom) VWSimplify(&nodeIDVector, &latVector, &lonVector, 40000000);
+
+			vector<uint64_t>::iterator nodeIDVectorIter = nodeIDVector.begin();
+			vector<uint64_t>::iterator latVectorIter = latVector.begin();
+			vector<uint64_t>::iterator lonVectorIter = lonVector.begin();
+			node_order = 0;
+			index_within_way = 0;
+			for (int i = 0; i < nodeIDVector.size(); i++) {
+				node_id = *(nodeIDVectorIter++);
+				node_order++;
+				lat = *(latVectorIter++);
+				lon = *(lonVectorIter++);
+				index_within_way++;
 
 				if (index_within_way == 1) {
-					nodesWithinWay = sqlite3_column_int64(stmt, 6);
+					//nodesWithinWay = sqlite3_column_int64(stmt, 6);
 					firstNodeID = node_id;
 
 					//The delta is based on the top-left point of the bounding box
-					deltaLat = latitudeToInt32(lat, 21) - rectangle->topInt32;
+					deltaLat = lat - rectangle->topInt32;
 					prevLatInt32 = rectangle->topInt32 + deltaLat;
-					deltaLon = longitudeToInt32(lon, 21) - rectangle->leftInt32;
+					deltaLon = lon - rectangle->leftInt32;
 					prevLonInt32 = rectangle->leftInt32 + deltaLon;
 				} else {
 					//The delta is based on the previous node
 					//Keep track of all the previous deltas by adding the rounded ones so we can base the current one on that instead of the accurate values
-					deltaLat = latitudeToInt32(lat, 21) - prevLatInt32;
+					deltaLat = lat - prevLatInt32;
 					prevLatInt32 += deltaLat;
-					deltaLon = longitudeToInt32(lon, 21) - prevLonInt32;
+					deltaLon = lon - prevLonInt32;
 					prevLonInt32 += deltaLon;
 				}
 				//cout << endl << "way deltaLat=" << deltaLat << " (lower 5 bits=" << (deltaLat & 0x1f) << "), deltaLon=" << deltaLon << " (lower 5 bits=" << (deltaLon & 0x1f) << ")" << endl;
@@ -1293,8 +1344,9 @@ void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRec
 				if (!isArea) coordinatesByteArrayPtr = google::protobuf::io::CodedOutputStream::WriteVarint32ToArray(sint32, coordinatesByteArrayPtr);
 				//coordinatesCount++;
 			}
-			sqlite3_finalize(stmt);
-			stmt = nullptr;
+			nodeIDVector.clear();
+			latVector.clear();
+			lonVector.clear();
 
 			//MapData.coordinates
 			if (isArea) {
@@ -1375,14 +1427,18 @@ void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRec
 		//sqlite3_finalize(res);
 		if (!quiet) cout << "\rWriting way " << wayIDs.size() << "/" << wayIDs.size() << " (100%)                                        " << endl;
 		wayIDs.clear();
+		wayIDs.shrink_to_fit();
 
 		//Nodes
 		uint64_t nodeIDIndex = 0;
+		double latDouble, lonDouble;
 		nodeIDIndex--; //This is so it's 0 the first time it's incremented
 		uint64_t nodeID = 0;
 		uint64_t nodeCount = 0;
-		string queryGetOnlyNodesWithTags = "select q1.node_id, ((q2.min_lat + q2.max_lat)/2), ((q2.min_lon + q2.max_lon)/2), q1.key, q1.value, (case when q1.key in (" + TAG_KEYS_HIGH_PRIORITY_WHITELIST + ") then 0 when key in (" + TAG_KEYS_HUMAN_READABLE_WHITELIST + ") then 2 else 1 end) as tagType, (select count(distinct q1.node_id) from node_tags q1 inner join rtree_node q2 on q2.node_id=q1.node_id where (q2.min_lat between :bottom and :top or q2.max_lat between :bottom and :top or (q2.min_lat <= :bottom and q2.max_lat >= :top)) and (q2.min_lon between :left and :right or q2.max_lon between :left and :right or (q2.min_lon <= :left and q2.max_lon >= :right))) as nodeIDCount from node_tags q1 inner join rtree_node q2 on q2.node_id=q1.node_id where /*" + TAG_KEYS_BLACKLIST + "*/ (q2.min_lat between :bottom and :top or q2.max_lat between :bottom and :top or (q2.min_lat <= :bottom and q2.max_lat >= :top)) and (q2.min_lon between :left and :right or q2.max_lon between :left and :right or (q2.min_lon <= :left and q2.max_lon >= :right)) order by q1.node_id asc, tagType asc, key asc, value asc;";
-		//cout << endl << queryGetOnlyNodesWithTags;
+		string queryGetOnlyNodesWithTags = "select q1.node_id, ((q2.min_lat + q2.max_lat)/2), ((q2.min_lon + q2.max_lon)/2), q1.key, q1.value, (case when q1.key in (" + TAG_KEYS_HIGH_PRIORITY_WHITELIST + ") then 0 when key in (" + TAG_KEYS_HUMAN_READABLE_WHITELIST + ") then 2 else 1 end) as tagType, (select count(distinct q1.node_id) from node_tags q1 inner join rtree_node q2 on q2.node_id=q1.node_id where (q2.max_lat >= :bottom and q2.min_lat <= :top) and (q2.max_lon >= :left and q2.min_lon <= :right)) as nodeIDCount from node_tags q1 inner join rtree_node q2 on q2.node_id=q1.node_id where (q2.max_lat >= :bottom and q2.min_lat <= :top) and (q2.max_lon >= :left and q2.min_lon <= :right) order by q1.node_id asc, tagType asc, key asc, value asc;";
+		if (mediumZoom) {
+			queryGetOnlyNodesWithTags = "select q1.node_id, ((q2.min_lat + q2.max_lat)/2), ((q2.min_lon + q2.max_lon)/2), q1.key, q1.value, (case when q1.key in (" + TAG_KEYS_HIGH_PRIORITY_WHITELIST + ") then 0 when key in (" + TAG_KEYS_HUMAN_READABLE_WHITELIST + ") then 2 else 1 end) as tagType, (select count(distinct q1.node_id) from node_tags q1 inner join rtree_node q2 on q2.node_id=q1.node_id where (q2.max_lat >= :bottom and q2.min_lat <= :top) and (q2.max_lon >= :left and q2.min_lon <= :right)) as nodeIDCount from node_tags q1 inner join rtree_node q2 on q2.node_id=q1.node_id where ((key = 'highway' and value in ('motorway', 'motorway_link', 'motorway_junction', 'primary', 'primary_link', 'secondary', 'secondary_link', 'tertiary', 'tertiary_link', 'trunk', 'trunk_link')) or (key in ('lanes', 'lanes:forward', 'lanes:backward', 'hgv', 'maxspeed', 'oneway', 'name', 'ref', 'destination', 'motorway_link'))) and (q2.max_lat >= :bottom and q2.min_lat <= :top) and (q2.max_lon >= :left and q2.min_lon <= :right) order by q1.node_id asc, tagType asc, key asc, value asc;";
+		}
 		rc = sqlite3_prepare_v2(dbConnection, queryGetOnlyNodesWithTags.c_str(), -1, &stmt, 0);
 		sqlite3_bind_double(stmt, sqlite3_bind_parameter_index(stmt, ":left"), rectangle->left);
 		sqlite3_bind_double(stmt, sqlite3_bind_parameter_index(stmt, ":right"), rectangle->right);
@@ -1420,11 +1476,11 @@ void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRec
 					stringNamesByteArrayPtr = stringNamesByteArrayPtrWithinThread;
 				}
 
-				lat = sqlite3_column_double(stmt, 1);
-				lon = sqlite3_column_double(stmt, 2);
+				latDouble = sqlite3_column_double(stmt, 1);
+				lonDouble = sqlite3_column_double(stmt, 2);
 
-				deltaLat = latitudeToInt32(lat, 21) - rectangle->topInt32;
-				deltaLon = longitudeToInt32(lon, 21) - rectangle->leftInt32;
+				deltaLat = latitudeToInt32(latDouble, 21) - rectangle->topInt32;
+				deltaLon = longitudeToInt32(lonDouble, 21) - rectangle->leftInt32;
 				//cout << endl << "node deltaLat=" << deltaLat << " (lower 5 bits=" << (deltaLat & 0x1f) << "), deltaLon=" << deltaLon << " (lower 5 bits=" << (deltaLon & 0x1f) << ")" << endl;
 
 				deltaLat >>= 5;
@@ -1490,6 +1546,50 @@ void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRec
 	}
 }
 
+void VWSimplify(vector<uint64_t> *nodeIDVector, vector<uint64_t> *latVector, vector<uint64_t> *lonVector, uint64_t minAreaX2) {
+	if (latVector->size() < 3) return;
+	//cout << endl << "Starting VWSimplify() with " << nodeIDVector->size() << " nodes";
+	//vector<uint64_t> triangleSizes;
+	uint64_t currentMinimum = 0;
+	uint64_t currentMinimumIdx = 1;
+	uint64_t currentValue = 0;
+	bool foundNodeToDelete = false;
+	//triangleSizes.reserve(nodeIDVector->size() - 2);
+	int64_t x1, x2, x3, y1, y2, y3;
+	do {
+		foundNodeToDelete = false;
+		currentMinimumIdx = 1;
+		//cout << endl << "VWSimplify(): about to process " << latVector->size() << " nodes";
+		for (int i = 1; i < nodeIDVector->size() - 1; i++) {
+			x1 = lonVector->at(i - 1);
+			x2 = lonVector->at(i);
+			x3 = lonVector->at(i + 1);
+			y1 = latVector->at(i - 1);
+			y2 = latVector->at(i);
+			y3 = latVector->at(i + 1);
+			currentValue = abs((x1 * (y2 - y3)) + (x2 * (y3 - y1)) + (x3 * (y1 - y2)));
+			if (currentValue < minAreaX2) foundNodeToDelete = true;
+			if (i == 1) {
+				currentMinimum = currentValue;
+			}
+			//triangleSizes.emplace_back(currentValue);
+			if (currentValue < currentMinimum) {
+				currentMinimum = currentValue;
+				currentMinimumIdx = i;
+			}
+			//cout << endl << "Triangle area * 2: " << currentValue;
+		}
+		if (foundNodeToDelete) {
+			//cout << endl << "Should remove node " << currentMinimumIdx << " (" << nodeIDVector->at(currentMinimumIdx) << ") with area * 2 = " << currentMinimum;
+			nodeIDVector->erase(nodeIDVector->begin() + currentMinimumIdx);
+			//nodeOrderVector->erase(nodeOrderVector->begin() + currentMinimumIdx);
+			latVector->erase(latVector->begin() + currentMinimumIdx);
+			lonVector->erase(lonVector->begin() + currentMinimumIdx);
+			//indexWithinWayVector->erase(indexWithinWayVector->begin() + currentMinimumIdx);
+		}
+	} while (foundNodeToDelete);
+}
+
 void writeMapEncodingRule(string tag, string value, uint32_t minZoom) {
 	remove("mapEncodingRule");
 	ofstream mapEncodingRuleTemp("mapEncodingRule", ios::binary);
@@ -1524,6 +1624,26 @@ uint64_t copyRawFileIntoCodedOutputStream(google::protobuf::io::CodedOutputStrea
 		bytesWritten += partialChunkSize;
 	}
 	return bytesWritten;
+}
+
+string humanReadableTimeFromSeconds(unsigned int seconds) {
+	unsigned int days = seconds / 86400;
+	seconds %= 86400;
+	unsigned int hours = seconds / 3600;
+	seconds %= 3600;
+	unsigned int minutes = seconds / 60;
+	seconds %= 60;
+	string retVal = to_string(seconds) + "s";
+	if (minutes > 0) {
+		retVal = to_string(minutes) + "m" + (seconds < 10 ? "0" : "") + retVal;
+	}
+	if (hours > 0) {
+		retVal = to_string(hours) + "h" + (minutes < 10 ? "0" : "") + retVal;
+	}
+	if (days > 0) {
+		retVal = to_string(days) + "d" + (hours < 10 ? "0" : "") + retVal;
+	}
+	return retVal;
 }
 
 __int64 getFileSize(const wchar_t* name) {

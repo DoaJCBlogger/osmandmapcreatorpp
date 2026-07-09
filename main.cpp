@@ -39,7 +39,7 @@ static inline int32_t latitudeToInt32(double latitude, uint32_t zoom);
 static inline int32_t longitudeToInt32(double longitude, uint32_t zoom);
 void writeOsmAndStructure_mapIndex_detailed_level_1x1(unsigned char *coordinatesByteArrayPtrWithinThread, unsigned char *typesByteArrayPtrWithinThread, unsigned char *additionalTypesByteArrayPtrWithinThread, unsigned char *stringNamesByteArrayPtrWithinThread);
 void writeOsmAndStructure_mapIndex_detailed_level_single_power_of_2_split(int pow2, bool mediumZoom);
-void writeOsmAndStructure_mapIndex_detailed_level_4_4_pow2_split(int pow2);
+void writeOsmAndStructure_mapIndex_detailed_level_4_4_pow2_split(int pow2, bool mediumZoom);
 double int32ToLatitude(uint64_t in, uint32_t zoom);
 double int32ToLongitude(uint64_t in, uint32_t zoom);
 uint32_t getVarintRequiredBytes(uint64_t i);
@@ -199,7 +199,8 @@ static sqlite3_stmt *res;
 static string databaseFilename = "";
 static bool shouldKeepTempFiles = false;
 static bool shouldForceSingleSplit = false;
-static unsigned int forcedSingleSplitPowerOf2 = 0;
+static unsigned int forcedSplitPowerOf2 = 0;
+static bool shouldForceQuadtreeSplit = false;
 static bool quiet = false;
 HWND hwndMainWin;
 uint32_t screenWidth, screenHeight;
@@ -214,7 +215,7 @@ struct SQLite3StatementDeleter {
 };
 
 int main(int argc, char** argv) {
-	cout << "OsmAndMapCreator++ v0.1.5" << endl;
+	cout << "OsmAndMapCreator++ v0.1.6" << endl;
 
 	uint64_t overallStartTime = GetSystemTimeAsUnixTime();
 
@@ -252,7 +253,12 @@ int main(int argc, char** argv) {
 			
 			if ((arg_view == "-force-single-split"sv || arg_view == "--force-single-split"sv || arg_view == "/force-single-split"sv) && i < (argc - 1)) {
 				shouldForceSingleSplit = true;
-				forcedSingleSplitPowerOf2 = atoi(argv[i + 1]);
+				if (!shouldForceQuadtreeSplit) forcedSplitPowerOf2 = atoi(argv[i + 1]); //A forced quadtree split takes precedence
+			}
+			
+			if ((arg_view == "-force-quadtree-split"sv || arg_view == "--force-quadtree-split"sv || arg_view == "/force-quadtree-split"sv) && i < (argc - 1)) {
+				shouldForceQuadtreeSplit = true;
+				forcedSplitPowerOf2 = atoi(argv[i + 1]);
 			}
 			
 			if ((arg_view == "-quiet"sv || arg_view == "--quiet"sv || arg_view == "/quiet"sv)) {
@@ -450,14 +456,15 @@ bool CALLBACK SetFont(HWND child, LPARAM font) {
 }
 
 void printHelp() {
-	cout << "OsmAndMapCreator++ version 0.1.5";
+	cout << "OsmAndMapCreator++ version 0.1.6";
 	cout << endl << endl << "This utility generates OBF map files for OsmAnd from an OpenStreetMap SQLite database";
 	cout << endl << endl << "Usage:";
-	cout << endl << "\t-i [path]\t\tInput filename (required)";
-	cout << endl << "\t-o [path]\t\tOutput filename";
-	cout << endl << "\t--keep-temp-files\tPreserve temp files for debugging (disabled by default)";
-	cout << endl << "\t--force-single-split [integer]\tForce a single power-of-2 split (for example, 2 would be 4x4)";
-	cout << endl << "\t-h\t\t\tPrint this message";
+	cout << endl << "\t-i [path]\t\t\t\tInput filename (required)";
+	cout << endl << "\t-o [path]\t\t\t\tOutput filename";
+	cout << endl << "\t--keep-temp-files\t\t\tPreserve temp files for debugging (disabled by default)";
+	cout << endl << "\t--force-single-split [integer]\t\tForce a single power-of-2 split (for example, 2 would be 4x4)";
+	cout << endl << "\t--force-quadtree-split [integer]\tForce a 2-level quadtree split with a power-of-2 split in each section (for example, 2 would be 4:4:4x4). Takes precedence when combined with --force-single-split";
+	cout << endl << "\t-h\t\t\t\t\tPrint this message";
 }
 
 uint64_t writeMapIndex(string name) {
@@ -480,13 +487,19 @@ uint64_t writeMapIndex(string name) {
 	//MapIndex.levels
 	mapIndexCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::kLevelsFieldNumber << 3) | 6);
 	unsigned int powerOf2Split = 1; //Start with 2x2 by default
-	if (shouldForceSingleSplit) {
-		powerOf2Split = forcedSingleSplitPowerOf2;
+	bool shouldUseQuadtreeSplit = ((!shouldForceSingleSplit && !shouldForceQuadtreeSplit) || shouldForceQuadtreeSplit); //Eventually we should set this automatically if the user didn't force a split option
+	if (shouldForceSingleSplit || shouldForceQuadtreeSplit) {
+		powerOf2Split = forcedSplitPowerOf2;
 	} else {
 		//Automatically find a good split value
-		powerOf2Split = getClosestNextLowerPowerOf2(max(overallBoundingRectangle.widthInt32 / IDEAL_BLOCK_MAX_SIZE, overallBoundingRectangle.heightInt32 / IDEAL_BLOCK_MAX_SIZE)); //Default to a bigger split (fewer blocks)
+		powerOf2Split = getClosestNextLowerPowerOf2(max(overallBoundingRectangle.widthInt32 / (IDEAL_BLOCK_MAX_SIZE * (shouldUseQuadtreeSplit ? 16 : 1)), overallBoundingRectangle.heightInt32 / (IDEAL_BLOCK_MAX_SIZE * (shouldUseQuadtreeSplit ? 16 : 1)))); //Default to a bigger split (fewer blocks)
 	}
-	writeOsmAndStructure_mapIndex_detailed_level_single_power_of_2_split(powerOf2Split, false /* detailed zoom */);
+	
+	if (shouldUseQuadtreeSplit) {
+		writeOsmAndStructure_mapIndex_detailed_level_4_4_pow2_split(powerOf2Split, false /* detailed zoom */);
+	} else {
+		writeOsmAndStructure_mapIndex_detailed_level_single_power_of_2_split(powerOf2Split, false /* detailed zoom */);
+	}
 	int64_t mapRootLevelSize = getFileSize(L"mapRootLevel");
 	writeOBFVarint32or64BE(mapIndexCos, mapRootLevelSize);
 	//cout << endl << "mapRootLevel size = " << mapRootLevelSize;
@@ -499,7 +512,11 @@ uint64_t writeMapIndex(string name) {
 	} else if (powerOf2Split >= 3) {
 		powerOf2Split -= 2;
 	}
-	writeOsmAndStructure_mapIndex_detailed_level_single_power_of_2_split(powerOf2Split, true /* medium zoom */);
+	if (shouldUseQuadtreeSplit) {
+		writeOsmAndStructure_mapIndex_detailed_level_4_4_pow2_split(powerOf2Split, true /* medium zoom */);
+	} else {
+		writeOsmAndStructure_mapIndex_detailed_level_single_power_of_2_split(powerOf2Split, true /* detailed zoom */);
+	}
 	mapRootLevelSize = getFileSize(L"mapRootLevel");
 	writeOBFVarint32or64BE(mapIndexCos, mapRootLevelSize);
 	//cout << endl << "mapRootLevel size = " << mapRootLevelSize;
@@ -856,20 +873,20 @@ void writeOsmAndStructure_mapIndex_detailed_level_single_power_of_2_split(int po
 
 //OsmAndMapIndex.MapRootLevel
 //This mode splits the map into a 2-level quadtree and uses a power-of-2 split in all 16 sections
-void writeOsmAndStructure_mapIndex_detailed_level_4_4_pow2_split(int pow2) {
+void writeOsmAndStructure_mapIndex_detailed_level_4_4_pow2_split(int pow2, bool mediumZoom) {
 	remove("mapRootLevel");
 	ofstream mapRootLevelTemp("mapRootLevel", ios::binary);
 	google::protobuf::io::OstreamOutputStream mapRootLevelTempOstream(&mapRootLevelTemp);
 	google::protobuf::io::CodedOutputStream mapRootLevelTempCos(&mapRootLevelTempOstream);
 
 	int splitSectionCount = 1 << pow2;
-	int totalBoxCount = 1 << (pow2 << 1);
-	cout << endl << "Using " << (shouldForceSingleSplit ? "user-defined" : "automatic") << " 4:4:" << splitSectionCount << "x" << splitSectionCount << " split (" << totalBoxCount << " data box" << (totalBoxCount == 1 ? "" : "es") << ")";
+	int totalBoxCount = (1 << (pow2 << 1)) << 4;
+	cout << endl << "Using " << (shouldForceQuadtreeSplit ? "user-defined" : "automatic") << " 4:4:" << splitSectionCount << "x" << splitSectionCount << " split (" << totalBoxCount << " data boxes)";
 
 	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kMaxZoomFieldNumber << 3));
-	mapRootLevelTempCos.WriteVarint32(26);
+	mapRootLevelTempCos.WriteVarint32(mediumZoom ? 14 : 26);
 	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kMinZoomFieldNumber << 3));
-	mapRootLevelTempCos.WriteVarint32(15);
+	mapRootLevelTempCos.WriteVarint32(mediumZoom ? 5 : 15);
 	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kLeftFieldNumber << 3));
 	mapRootLevelTempCos.WriteVarint32(overallBoundingRectangle.leftInt32);
 	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kRightFieldNumber << 3));
@@ -879,9 +896,16 @@ void writeOsmAndStructure_mapIndex_detailed_level_4_4_pow2_split(int pow2) {
 	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kBottomFieldNumber << 3));
 	mapRootLevelTempCos.WriteVarint32(overallBoundingRectangle.bottomInt32);
 
+	uint64_t singleBoxWidth, singleBoxHeight;
+	singleBoxWidth = (overallBoundingRectangle.widthInt32 >> pow2) >> 2;
+	singleBoxHeight = (overallBoundingRectangle.heightInt32 >> pow2) >> 2;
+	cout << endl << "single box width=" << singleBoxWidth << ", height=" << singleBoxHeight;
+
 	//MapRootLevel.boxes
 	unique_ptr<BoundingRectangle[]> quadtreeLevel1Rectangles = make_unique<BoundingRectangle[]>(4);
 	unique_ptr<BoundingRectangle[]> quadtreeLevel2Rectangles = make_unique<BoundingRectangle[]>(16);
+	//Split the overall bounding box
+	unique_ptr<BoundingRectangle[]> rectangles = make_unique<BoundingRectangle[]>(totalBoxCount);
 	for (unsigned int y = 0; y < 2; y++) {
 		for (unsigned int x = 0; x < 2; x++) {
 			quadtreeLevel1Rectangles[(y * 2) + x].leftInt32 = (overallBoundingRectangle.leftInt32 + (x * (overallBoundingRectangle.widthInt32 / 2))) & 0xffffffe0;
@@ -889,8 +913,10 @@ void writeOsmAndStructure_mapIndex_detailed_level_4_4_pow2_split(int pow2) {
 			quadtreeLevel1Rectangles[(y * 2) + x].topInt32 = (overallBoundingRectangle.topInt32 + (y * (overallBoundingRectangle.heightInt32 / 2))) & 0xffffffe0;
 			quadtreeLevel1Rectangles[(y * 2) + x].bottomInt32 = (overallBoundingRectangle.topInt32 + ((y + 1) * (overallBoundingRectangle.heightInt32 / 2))) & 0xffffffe0;
 			quadtreeLevel1Rectangles[(y * 2) + x].calculateDoubleValuesFromInt32();
-			//quadtreeLevel1Rectangles[(y * 2) + x].expandByPercent(5);
-			if (!quiet) cout << endl << "Quadtree level 1 rectangle " << (((y * 2) + x) + 1) << ": " << quadtreeLevel1Rectangles[(y * 2) + x].left << ", " << quadtreeLevel1Rectangles[(y * 2) + x].right << ", " << quadtreeLevel1Rectangles[(y * 2) + x].bottom << ", " << quadtreeLevel1Rectangles[(y * 2) + x].top;
+			quadtreeLevel1Rectangles[(y * 2) + x].expandByAbsoluteValue(40000);
+			quadtreeLevel1Rectangles[(y * 2) + x].calculateMapDataBoxBytesSizeWithoutTagAndFixed32Size(&overallBoundingRectangle);
+			quadtreeLevel1Rectangles[(y * 2) + x].MapDataBoxBytesSizeWithoutTagAndFixed32Size -= (1 + 4); //Quadtree boxes don't have shiftToMapData
+			//if (!quiet) cout << endl << "Quadtree level 1 rectangle " << (((y * 2) + x) + 1) << ": " << quadtreeLevel1Rectangles[(y * 2) + x].left << ", " << quadtreeLevel1Rectangles[(y * 2) + x].right << ", " << quadtreeLevel1Rectangles[(y * 2) + x].bottom << ", " << quadtreeLevel1Rectangles[(y * 2) + x].top;
 
 			//Generate the 4 level-2 quadtree boxes
 			for (unsigned int y2 = 0; y2 < 2; y2++) {
@@ -900,30 +926,24 @@ void writeOsmAndStructure_mapIndex_detailed_level_4_4_pow2_split(int pow2) {
 					quadtreeLevel2Rectangles[(((y * 2) + x) * 4) + (y2 * 2) + x2].topInt32 = (quadtreeLevel1Rectangles[(y * 2) + x].topInt32 + (y2 * (quadtreeLevel1Rectangles[(y * 2) + x].heightInt32 / 2))) & 0xffffffe0;
 					quadtreeLevel2Rectangles[(((y * 2) + x) * 4) + (y2 * 2) + x2].bottomInt32 = (quadtreeLevel1Rectangles[(y * 2) + x].topInt32 + ((y2 + 1) * (quadtreeLevel1Rectangles[(y * 2) + x].heightInt32 / 2))) & 0xffffffe0;
 					quadtreeLevel2Rectangles[(((y * 2) + x) * 4) + (y2 * 2) + x2].calculateDoubleValuesFromInt32();
-					//quadtreeLevel2Rectangles[(((y * 2) + x) * 4) + (y2 * 2) + x2].expandByPercent(5);
-					if (!quiet) cout << endl << "\tQuadtree level 2 rectangle " << (((y2 * 2) + x2) + 1) << ": " << quadtreeLevel2Rectangles[(((y * 2) + x) * 4) + (y2 * 2) + x2].left << ", " << quadtreeLevel2Rectangles[(((y * 2) + x) * 4) + (y2 * 2) + x2].right << ", " << quadtreeLevel2Rectangles[(((y * 2) + x) * 4) + (y2 * 2) + x2].bottom << ", " << quadtreeLevel2Rectangles[(((y * 2) + x) * 4) + (y2 * 2) + x2].top;
+					quadtreeLevel2Rectangles[(((y * 2) + x) * 4) + (y2 * 2) + x2].expandByAbsoluteValue(40000);
+					quadtreeLevel2Rectangles[(((y * 2) + x) * 4) + (y2 * 2) + x2].calculateMapDataBoxBytesSizeWithoutTagAndFixed32Size(&(quadtreeLevel1Rectangles[(y * 2) + x]));
+					quadtreeLevel2Rectangles[(((y * 2) + x) * 4) + (y2 * 2) + x2].MapDataBoxBytesSizeWithoutTagAndFixed32Size -= (1 + 4);
+					for (unsigned int j = 0; j < splitSectionCount; j++) {
+						for (unsigned int i = 0; i < splitSectionCount; i++) {
+							rectangles[(((((y /* level 1 quadtree Y */ * 2) + x /* level 1 quadtree X */) * 4) + (y2 /* level 2 quadtree Y */ * 2) + x2 /* level 2 quadtree X */) * (splitSectionCount * splitSectionCount)) + ((j /* Y of MapDataBox within level 2 quadtree box */ * splitSectionCount) + i /* X of MapDataBox within level 2 quadtree box */)].leftInt32 = (quadtreeLevel2Rectangles[(((y * 2) + x) * 4) + (y2 * 2) + x2].leftInt32 + (i * singleBoxWidth));
+							rectangles[(((((y * 2) + x) * 4) + (y2 * 2) + x2) * (splitSectionCount * splitSectionCount)) + ((j * splitSectionCount) + i)].rightInt32 = rectangles[(((((y * 2) + x) * 4) + (y2 * 2) + x2) * (splitSectionCount * splitSectionCount)) + ((j * splitSectionCount) + i)].leftInt32 + singleBoxWidth;
+							rectangles[(((((y * 2) + x) * 4) + (y2 * 2) + x2) * (splitSectionCount * splitSectionCount)) + ((j * splitSectionCount) + i)].topInt32 = (quadtreeLevel2Rectangles[(((y * 2) + x) * 4) + (y2 * 2) + x2].topInt32 + (j * singleBoxHeight));
+							rectangles[(((((y * 2) + x) * 4) + (y2 * 2) + x2) * (splitSectionCount * splitSectionCount)) + ((j * splitSectionCount) + i)].bottomInt32 = (rectangles[(((((y * 2) + x) * 4) + (y2 * 2) + x2) * (splitSectionCount * splitSectionCount)) + ((j * splitSectionCount) + i)].topInt32 + singleBoxHeight);
+							rectangles[(((((y * 2) + x) * 4) + (y2 * 2) + x2) * (splitSectionCount * splitSectionCount)) + ((j * splitSectionCount) + i)].calculateDoubleValuesFromInt32();
+							rectangles[(((((y * 2) + x) * 4) + (y2 * 2) + x2) * (splitSectionCount * splitSectionCount)) + ((j * splitSectionCount) + i)].expandByAbsoluteValue(40000);
+							rectangles[(((((y * 2) + x) * 4) + (y2 * 2) + x2) * (splitSectionCount * splitSectionCount)) + ((j * splitSectionCount) + i)].calculateMapDataBoxBytesSizeWithoutTagAndFixed32Size(&(quadtreeLevel2Rectangles[(((y * 2) + x) * 4) + (y2 * 2) + x2]));
+							//cout << endl << "Rectangle " << ((((((y * 2) + x) * 4) + (y2 * 2) + x2) * (splitSectionCount * splitSectionCount)) + ((j * splitSectionCount) + i));
+						}
+					}
+					//if (!quiet) cout << endl << "\tQuadtree level 2 rectangle " << (((y2 * 2) + x2) + 1) << " (overall quadtree index " << ((((y * 2) + x) * 4) + (y2 * 2) + x2) << "): " << quadtreeLevel2Rectangles[(((y * 2) + x) * 4) + (y2 * 2) + x2].left << ", " << quadtreeLevel2Rectangles[(((y * 2) + x) * 4) + (y2 * 2) + x2].right << ", " << quadtreeLevel2Rectangles[(((y * 2) + x) * 4) + (y2 * 2) + x2].bottom << ", " << quadtreeLevel2Rectangles[(((y * 2) + x) * 4) + (y2 * 2) + x2].top;
 				}
 			}
-		}
-	}return;
-
-	//Split the overall bounding box
-	unique_ptr<BoundingRectangle[]> rectangles = make_unique<BoundingRectangle[]>(totalBoxCount);
-	uint64_t singleBoxWidth, singleBoxHeight;
-	singleBoxWidth = overallBoundingRectangle.widthInt32 >> pow2;
-	singleBoxHeight = overallBoundingRectangle.heightInt32 >> pow2;
-	cout << endl << "single box width=" << singleBoxWidth << ", height=" << singleBoxHeight;
-
-	for (int y = 0; y < splitSectionCount; y++) {
-		for (int x = 0; x < splitSectionCount; x++) {
-			rectangles[(y * splitSectionCount) + x].leftInt32 = (overallBoundingRectangle.leftInt32 + (x * singleBoxWidth)) - NODE_BLOCK_OVERLAP;
-			rectangles[(y * splitSectionCount) + x].rightInt32 = rectangles[(y * splitSectionCount) + x].leftInt32 + singleBoxWidth + NODE_BLOCK_OVERLAP;
-			rectangles[(y * splitSectionCount) + x].topInt32 = (overallBoundingRectangle.topInt32 + (y * singleBoxHeight)) - NODE_BLOCK_OVERLAP;
-			rectangles[(y * splitSectionCount) + x].bottomInt32 = (rectangles[(y * splitSectionCount) + x].topInt32 + singleBoxHeight + NODE_BLOCK_OVERLAP);
-			rectangles[(y * splitSectionCount) + x].calculateDoubleValuesFromInt32();
-			rectangles[(y * splitSectionCount) + x].expandByAbsoluteValue(40000);
-			rectangles[(y * splitSectionCount) + x].calculateMapDataBoxBytesSizeWithoutTagAndFixed32Size(&overallBoundingRectangle);
-			//cout << endl << "Rectangle " << (((y * splitSectionCount) + x) + 1) << " left, right, top, bottom:\t" << rectangles[(y * splitSectionCount) + x].left << ", " << rectangles[(y * splitSectionCount) + x].right << ", " << rectangles[(y * splitSectionCount) + x].top << ", " << rectangles[(y * splitSectionCount) + x].bottom;
 		}
 	}
 
@@ -980,6 +1000,7 @@ void writeOsmAndStructure_mapIndex_detailed_level_4_4_pow2_split(int pow2) {
 		threadInfo[i].typesByteArrayPtrWithinThread = typesByteArrayUniquePtrArrayForThreads[i].get();
 		threadInfo[i].additionalTypesByteArrayPtrWithinThread = additionalTypesByteArrayUniquePtrArrayForThreads[i].get();
 		threadInfo[i].stringNamesByteArrayPtrWithinThread = stringNamesByteArrayUniquePtrArrayForThreads[i].get();
+		threadInfo[i].mediumZoom = mediumZoom;
 		threadHandles[i] = _beginthread(writeOsmAndStructure_mapIndex_levels_block_SingleSplitThreadWorker, 0, &threadInfo[i]);
 	}
 
@@ -996,7 +1017,7 @@ void writeOsmAndStructure_mapIndex_detailed_level_4_4_pow2_split(int pow2) {
 	for (int i = 0; i < 4; i++) WaitForSingleObject((HANDLE)threadHandles[i], INFINITE);
 	cout << "done";
 	unique_ptr<uint64_t[]> mapDataBlockSizes = make_unique<uint64_t[]>(totalBoxCount);
-	for (int i = 0; i < totalBoxCount; i++) mapDataBlockSizes[i] = getFileSize(utf8_to_wstring(string("mapDataBlock" + to_string(i) + ".tmp")).c_str());
+	for (int i = 0; i < (totalBoxCount); i++) mapDataBlockSizes[i] = getFileSize(utf8_to_wstring(string("mapDataBlock" + to_string(i) + ".tmp")).c_str());
 
 	if (thread0Stmt != nullptr) {
 		sqlite3_finalize(thread0Stmt);
@@ -1022,23 +1043,47 @@ void writeOsmAndStructure_mapIndex_detailed_level_4_4_pow2_split(int pow2) {
 	//MapRootLevel.boxes
 	//Write these after generating the data blocks so we don't have to wait to find the offsets
 
-	//For some reason, the box has to be built in an EXACT way that includes shiftToMapData with a wiretype of 6
+	unique_ptr<uint64_t[]> quadtreeLevel1ByteSizesIncludingAllSubBoxes = make_unique<uint64_t[]>(4);
+	unique_ptr<uint64_t[]> quadtreeLevel2ByteSizesIncludingAllSubBoxes = make_unique<uint64_t[]>(16);
+	uint64_t level1BoxSize, level2BoxSize;
+	uint32_t rootBoxSize, boxSize;
+	rootBoxSize = 1 + getVarintRequiredBytes(0) /* left */ + 1 + getVarintRequiredBytes(0) /* right */ + 1 + getVarintRequiredBytes(0) /* top */ + 1 + getVarintRequiredBytes(0) /* bottom */;
+	for (int y = 1; y >= 0; y--) {
+		for (int x = 1; x >= 0; x--) {
+			level1BoxSize = quadtreeLevel1Rectangles[(y * 2) + x].MapDataBoxBytesSizeWithoutTagAndFixed32Size;
+			for (int y2 = 1; y2 >= 0; y2--) {
+				for (int x2 = 1; x2 >= 0; x2--) {
+					level2BoxSize = quadtreeLevel2Rectangles[(((y * 2) + x) * 4) + ((y2 * 2) + x2)].MapDataBoxBytesSizeWithoutTagAndFixed32Size;
+					for (unsigned int i = 0; i < (splitSectionCount * splitSectionCount); i++) {
+						level2BoxSize += 1 + 4 + rectangles[(((((y * 2) + x) * 4) + ((y2 * 2) + x2)) * (splitSectionCount * splitSectionCount)) + i].MapDataBoxBytesSizeWithoutTagAndFixed32Size;
+					}
+					quadtreeLevel2ByteSizesIncludingAllSubBoxes[(((y * 2) + x) * 4) + ((y2 * 2) + x2)] = level2BoxSize;
+					//cout << endl << "\tQuadtree level 2 box " << (((y2 * 2) + x2) + 1) << " (overall box " << ((((y * 2) + x) * 4) + ((y2 * 2) + x2)) << ") byte size without tag and fixed32 size: " << level2BoxSize;
+					level1BoxSize += 1 + 4 + level2BoxSize;
+				}
+			}
+			quadtreeLevel1ByteSizesIncludingAllSubBoxes[(y * 2) + x] = level1BoxSize;
+			rootBoxSize += 1 + 4 + level1BoxSize;
+			//cout << endl << "Quadtree level 1 box " << (((y * 2) + x) + 1) << " byte size without tag and fixed32 size: " << level1BoxSize;
+		}
+	}
+	
+	//For some reason, the boxes with data have to be built in an EXACT way that includes shiftToMapData with a wiretype of 6
 
 	//We need a root box to contain the other ones because it can't process more than one top-level box
-	if (!quiet) cout << endl << "Box sizes: ";
+	/*if (!quiet) cout << endl << "Box sizes: ";
 	uint32_t boxSize = 0;
-	boxSize = 1 + getVarintRequiredBytes(0) + 1 + getVarintRequiredBytes(0) + 1 + getVarintRequiredBytes(0) + 1 + getVarintRequiredBytes(0);
 	for (int i = 0; i < totalBoxCount; i++) {
 		if (!quiet) cout << rectangles[i].MapDataBoxBytesSizeWithoutTagAndFixed32Size;
 		boxSize += 1 + 4 + rectangles[i].MapDataBoxBytesSizeWithoutTagAndFixed32Size;
 		if (!quiet && i < totalBoxCount - 1) cout << ", ";
-	}
+	}*/
 
 	//Root box
 	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kBoxesFieldNumber << 3) | 6);
 	//cout << endl << "Root box size: " << boxSize;
-	boxSize = swap_endian(boxSize);
-	mapRootLevelTempCos.WriteRaw(&boxSize, 4);
+	rootBoxSize = swap_endian(rootBoxSize);
+	mapRootLevelTempCos.WriteRaw(&rootBoxSize, 4);
 	//boxSize = swap_endian(boxSize);
 	mapRootLevelTempCos.WriteTag(OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kLeftFieldNumber << 3);
 	mapRootLevelTempCos.WriteVarint32(0);
@@ -1049,13 +1094,96 @@ void writeOsmAndStructure_mapIndex_detailed_level_4_4_pow2_split(int pow2) {
 	mapRootLevelTempCos.WriteTag(OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kBottomFieldNumber << 3);
 	mapRootLevelTempCos.WriteVarint32(0);
 
+	unsigned int boxesWithinLevel2Quadtree = (splitSectionCount * splitSectionCount);
+	uint32_t shiftToMapData = 0;
+	for (unsigned int y = 0; y < 2; y++) {
+		for (unsigned int x = 0; x < 2; x++) {
+			//Top-level quadtree boxes
+			mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kBoxesFieldNumber << 3) | 6);
+			boxSize = quadtreeLevel1ByteSizesIncludingAllSubBoxes[(y * 2) + x] /*- (1 + 4)*/;
+			//Add the 4 level-2 quadtree box sizes and their sub-boxes
+			/*for (int i = 0; i < 4; i++) {
+				//Level-2 quadtree box
+				boxSize += 1 + 4 + quadtreeLevel2ByteSizes[(((y * 2) + x) * 4) + i];
+
+				//Sub-boxes
+				for (int j = 0; j < (splitSectionCount * splitSectionCount); j++) boxSize += 1 + 4 + rectangles[(((((y * 2) + x) * 4) + i) * (splitSectionCount * splitSectionCount)) + j].MapDataBoxBytesSizeWithoutTagAndFixed32Size;
+			}*/
+			boxSize = swap_endian(boxSize);
+			mapRootLevelTempCos.WriteRaw(&boxSize, 4);
+			mapRootLevelTempCos.WriteTag(OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kLeftFieldNumber << 3);
+			mapRootLevelTempCos.WriteVarint32(getSInt32FromInt32(((int64_t)quadtreeLevel1Rectangles[(y * 2) + x].leftInt32) - ((int64_t)overallBoundingRectangle.leftInt32)));
+			mapRootLevelTempCos.WriteTag(OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kRightFieldNumber << 3);
+			mapRootLevelTempCos.WriteVarint32(getSInt32FromInt32(((int64_t)quadtreeLevel1Rectangles[(y * 2) + x].rightInt32) - ((int64_t)overallBoundingRectangle.rightInt32)));
+			mapRootLevelTempCos.WriteTag(OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kTopFieldNumber << 3);
+			mapRootLevelTempCos.WriteVarint32(getSInt32FromInt32(((int64_t)quadtreeLevel1Rectangles[(y * 2) + x].topInt32) - ((int64_t)overallBoundingRectangle.topInt32)));
+			mapRootLevelTempCos.WriteTag(OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kBottomFieldNumber << 3);
+			mapRootLevelTempCos.WriteVarint32(getSInt32FromInt32(((int64_t)quadtreeLevel1Rectangles[(y * 2) + x].bottomInt32) - ((int64_t)overallBoundingRectangle.bottomInt32)));
+			for (unsigned int y2 = 0; y2 < 2; y2++) {
+				for (unsigned int x2 = 0; x2 < 2; x2++) {
+					//Level-2 quadtree boxes
+					mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kBoxesFieldNumber << 3) | 6);
+					boxSize = quadtreeLevel2ByteSizesIncludingAllSubBoxes[(((y * 2) + x) * 4) + ((y2 * 2) + x2)] /*- (1 + 4)*/;
+					//for (int j = 0; j < (splitSectionCount * splitSectionCount); j++) boxSize += 1 + 4 + rectangles[(((((y * 2) + x) * 4) + ((y2 * 2) + x2)) * (splitSectionCount * splitSectionCount)) + j].MapDataBoxBytesSizeWithoutTagAndFixed32Size;
+					boxSize = swap_endian(boxSize);
+					mapRootLevelTempCos.WriteRaw(&boxSize, 4);
+					mapRootLevelTempCos.WriteTag(OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kLeftFieldNumber << 3);
+					mapRootLevelTempCos.WriteVarint32(getSInt32FromInt32(((int64_t)quadtreeLevel2Rectangles[(((y * 2) + x) * 4) + ((y2 * 2) + x2)].leftInt32) - ((int64_t)quadtreeLevel1Rectangles[(y * 2) + x].leftInt32)));
+					mapRootLevelTempCos.WriteTag(OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kRightFieldNumber << 3);
+					mapRootLevelTempCos.WriteVarint32(getSInt32FromInt32(((int64_t)quadtreeLevel2Rectangles[(((y * 2) + x) * 4) + ((y2 * 2) + x2)].rightInt32) - ((int64_t)quadtreeLevel1Rectangles[(y * 2) + x].rightInt32)));
+					mapRootLevelTempCos.WriteTag(OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kTopFieldNumber << 3);
+					mapRootLevelTempCos.WriteVarint32(getSInt32FromInt32(((int64_t)quadtreeLevel2Rectangles[(((y * 2) + x) * 4) + ((y2 * 2) + x2)].topInt32) - ((int64_t)quadtreeLevel1Rectangles[(y * 2) + x].topInt32)));
+					mapRootLevelTempCos.WriteTag(OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kBottomFieldNumber << 3);
+					mapRootLevelTempCos.WriteVarint32(getSInt32FromInt32(((int64_t)quadtreeLevel2Rectangles[(((y * 2) + x) * 4) + ((y2 * 2) + x2)].bottomInt32) - ((int64_t)quadtreeLevel1Rectangles[(y * 2) + x].bottomInt32)));
+					for (int j = 0; j < boxesWithinLevel2Quadtree; j++) {
+						mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kBoxesFieldNumber << 3) | 6);
+						boxSize = rectangles[(((((y * 2) + x) * 4) + ((y2 * 2) + x2)) * boxesWithinLevel2Quadtree) + j].MapDataBoxBytesSizeWithoutTagAndFixed32Size;
+						boxSize = swap_endian(boxSize);
+						mapRootLevelTempCos.WriteRaw(&boxSize, 4);
+						mapRootLevelTempCos.WriteTag(OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kLeftFieldNumber << 3);
+						mapRootLevelTempCos.WriteVarint32(getSInt32FromInt32(((int64_t)rectangles[(((((y * 2) + x) * 4) + ((y2 * 2) + x2)) * boxesWithinLevel2Quadtree) + j].leftInt32) - ((int64_t)quadtreeLevel2Rectangles[(((y * 2) + x) * 4) + ((y2 * 2) + x2)].leftInt32)));
+						mapRootLevelTempCos.WriteTag(OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kRightFieldNumber << 3);
+						mapRootLevelTempCos.WriteVarint32(getSInt32FromInt32(((int64_t)rectangles[(((((y * 2) + x) * 4) + ((y2 * 2) + x2)) * boxesWithinLevel2Quadtree) + j].rightInt32) - ((int64_t)quadtreeLevel2Rectangles[(((y * 2) + x) * 4) + ((y2 * 2) + x2)].rightInt32)));
+						mapRootLevelTempCos.WriteTag(OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kTopFieldNumber << 3);
+						mapRootLevelTempCos.WriteVarint32(getSInt32FromInt32(((int64_t)rectangles[(((((y * 2) + x) * 4) + ((y2 * 2) + x2)) * boxesWithinLevel2Quadtree) + j].topInt32) - ((int64_t)quadtreeLevel2Rectangles[(((y * 2) + x) * 4) + ((y2 * 2) + x2)].topInt32)));
+						mapRootLevelTempCos.WriteTag(OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kBottomFieldNumber << 3);
+						mapRootLevelTempCos.WriteVarint32(getSInt32FromInt32(((int64_t)rectangles[(((((y * 2) + x) * 4) + ((y2 * 2) + x2)) * boxesWithinLevel2Quadtree) + j].bottomInt32) - ((int64_t)quadtreeLevel2Rectangles[(((y * 2) + x) * 4) + ((y2 * 2) + x2)].bottomInt32)));
+						//shiftToMapData
+						//Add the sizes of the future sub-boxes in this level 2 quadtree block + the other level 1 quadtree blocks + the sizes of the data blocks before the current one
+						shiftToMapData = 0;
+						//Add the future blocks within the current level 2 quadtree
+						for (int k = j; k < boxesWithinLevel2Quadtree; k++) {
+							shiftToMapData += (k > j ? (1 + 4) : 0) /* Don't add our (the current sub-box's) tag and fixed32 size since we're starting from the MapDatBox.left tag */ + rectangles[(((((y * 2) + x) * 4) + ((y2 * 2) + x2)) * boxesWithinLevel2Quadtree) + /*j*/k].MapDataBoxBytesSizeWithoutTagAndFixed32Size;
+						}
+						//Add the future level 2 quadtree blocks
+						for (unsigned int k = (((y2 * 2) + x2) + 1); k < 4; k++) {
+							shiftToMapData += 1 + 4 + quadtreeLevel2ByteSizesIncludingAllSubBoxes[k];
+						}
+						//Add the future level 1 quadtree blocks
+						for (unsigned int k = (((y * 2) + x) + 1); k < 4; k++) {
+							shiftToMapData += 1 + 4 + quadtreeLevel1ByteSizesIncludingAllSubBoxes[k];
+						}
+						//Add the future MapDataBlock sizes
+						for (unsigned int k = 0; k < ((((((y * 2) + x) * 4) + ((y2 * 2) + x2)) * boxesWithinLevel2Quadtree) + j); k++) {
+							shiftToMapData += 1 + getVarintRequiredBytes(mapDataBlockSizes[k]) + mapDataBlockSizes[k];
+						}
+						shiftToMapData++;
+						mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kShiftToMapDataFieldNumber << 3) | 6);
+						shiftToMapData = swap_endian(shiftToMapData);
+						mapRootLevelTempCos.WriteRaw(&shiftToMapData, 4);
+					}
+				}
+			}
+		}
+	}
+
 	/*This should be
 		[current boxSize_without_tag_and_fixed32size] +
 		[all future boxes with tag and fixed32 size] +
 		[sizes of any undesired MapDataBlocks + tag and varint size] +
 		[desired box's tag]
 	so the offset is from MapDataBox.left_tag to MapDataBlock.varint_size*/
-	uint32_t shiftToMapData = 0;
+	/*uint32_t shiftToMapData = 0;
 	for (int i = 0; i < totalBoxCount; i++) {
 		shiftToMapData = rectangles[i].MapDataBoxBytesSizeWithoutTagAndFixed32Size;
 		//Add the future MapDataBoxes
@@ -1083,7 +1211,7 @@ void writeOsmAndStructure_mapIndex_detailed_level_4_4_pow2_split(int pow2) {
 		mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapDataBox::kShiftToMapDataFieldNumber << 3) | 6);
 		shiftToMapData = swap_endian(shiftToMapData);
 		mapRootLevelTempCos.WriteRaw(&shiftToMapData, 4);
-	}
+	}*/
 
 	//Write the MapDataBlocks
 	//We should delete the temp files as we copy them to save space

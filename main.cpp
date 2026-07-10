@@ -205,9 +205,8 @@ static sqlite3 *db;
 static sqlite3_stmt *res;
 static string databaseFilename = "";
 static bool shouldKeepTempFiles = false;
-static bool shouldForceSingleSplit = false;
 static unsigned int forcedSplitPowerOf2 = 0;
-static bool shouldForceQuadtreeSplit = false;
+static int forceSplitMode = -1; //-1 = automatic, 0 = single, 1 = 2-level quadtree, 2 = 3-level quadtree
 static bool quiet = false;
 HWND hwndMainWin;
 uint32_t screenWidth, screenHeight;
@@ -260,13 +259,24 @@ int main(int argc, char** argv) {
 			}
 			
 			if ((arg_view == "-force-single-split"sv || arg_view == "--force-single-split"sv || arg_view == "/force-single-split"sv) && i < (argc - 1)) {
-				shouldForceSingleSplit = true;
-				if (!shouldForceQuadtreeSplit) forcedSplitPowerOf2 = atoi(argv[i + 1]); //A forced quadtree split takes precedence
+				if (forceSplitMode < 0 /* single split*/) {
+					forceSplitMode = 0;
+					forcedSplitPowerOf2 = atoi(argv[i + 1]); //A forced quadtree split takes precedence
+				}
 			}
 			
-			if ((arg_view == "-force-quadtree-split"sv || arg_view == "--force-quadtree-split"sv || arg_view == "/force-quadtree-split"sv) && i < (argc - 1)) {
-				shouldForceQuadtreeSplit = true;
-				forcedSplitPowerOf2 = atoi(argv[i + 1]);
+			if ((arg_view == "-force-quadtree2-split"sv || arg_view == "--force-quadtree2-split"sv || arg_view == "/force-quadtree2-split"sv) && i < (argc - 1)) {
+				if (forceSplitMode < 1 /* 2-level quadtree */) {
+					forceSplitMode = 1;
+					forcedSplitPowerOf2 = atoi(argv[i + 1]);
+				}
+			}
+			
+			if ((arg_view == "-force-quadtree3-split"sv || arg_view == "--force-quadtree3-split"sv || arg_view == "/force-quadtree3-split"sv) && i < (argc - 1)) {
+				if (forceSplitMode < 2 /* 3-level quadtree */) {
+					forceSplitMode = 2;
+					forcedSplitPowerOf2 = atoi(argv[i + 1]);
+				}
 			}
 			
 			if ((arg_view == "-quiet"sv || arg_view == "--quiet"sv || arg_view == "/quiet"sv)) {
@@ -471,7 +481,8 @@ void printHelp() {
 	cout << endl << "\t-o [path]\t\t\t\tOutput filename";
 	cout << endl << "\t--keep-temp-files\t\t\tPreserve temp files for debugging (disabled by default)";
 	cout << endl << "\t--force-single-split [integer]\t\tForce a single power-of-2 split (for example, 2 would be 4x4)";
-	cout << endl << "\t--force-quadtree-split [integer]\tForce a 2-level quadtree split with a power-of-2 split in each section (for example, 2 would be 4:4:4x4). Takes precedence when combined with --force-single-split";
+	cout << endl << "\t--force-quadtree2-split [integer]\tForce a 2-level quadtree split with a power-of-2 split in each section (for example, 2 would be 4:4:4x4). Takes precedence when combined with --force-single-split";
+	cout << endl << "\t--force-quadtree3-split [integer]\tForce a 3-level quadtree split with a power-of-2 split in each section (for example, 2 would be 4:4:4:4x4). Takes precedence when combined with --force-quadtree2-split or --force-single-split";
 	cout << endl << "\t-h\t\t\t\t\tPrint this message";
 }
 
@@ -495,18 +506,26 @@ uint64_t writeMapIndex(string name) {
 	//MapIndex.levels
 	mapIndexCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::kLevelsFieldNumber << 3) | 6);
 	unsigned int powerOf2Split = 1; //Start with 2x2 by default
-	bool shouldUseQuadtreeSplit = ((!shouldForceSingleSplit && !shouldForceQuadtreeSplit) || shouldForceQuadtreeSplit); //Eventually we should set this automatically if the user didn't force a split option
-	if (shouldForceSingleSplit || shouldForceQuadtreeSplit) {
+	//Eventually we should set this automatically if the user didn't force a split option
+	unsigned int multiplierForBlockSizeDivider = 16;
+	if (forceSplitMode == 1 /* 2-level quadtree */) {
+		multiplierForBlockSizeDivider = 16;
+	} else if (forceSplitMode == 2 /* 3-level quadtree */) {
+		multiplierForBlockSizeDivider = 8;
+	}
+	if (forceSplitMode >= 0) {
 		powerOf2Split = forcedSplitPowerOf2;
 	} else {
 		//Automatically find a good split value
-		powerOf2Split = getClosestNextLowerPowerOf2(max(overallBoundingRectangle.widthInt32 / (IDEAL_BLOCK_MAX_SIZE * (shouldUseQuadtreeSplit ? 16 : 1)), overallBoundingRectangle.heightInt32 / (IDEAL_BLOCK_MAX_SIZE * (shouldUseQuadtreeSplit ? 16 : 1)))); //Default to a bigger split (fewer blocks)
+		powerOf2Split = getClosestNextLowerPowerOf2(max(overallBoundingRectangle.widthInt32 / (IDEAL_BLOCK_MAX_SIZE * multiplierForBlockSizeDivider), overallBoundingRectangle.heightInt32 / (IDEAL_BLOCK_MAX_SIZE * multiplierForBlockSizeDivider))); //Default to a bigger split (fewer blocks)
 	}
 	
-	if (shouldUseQuadtreeSplit) {
-		writeOsmAndStructure_mapIndex_detailed_level_4_4_4_pow2_split(powerOf2Split, false /* detailed zoom */);
-	} else {
+	if (forceSplitMode == -1 || forceSplitMode == 0 /* automatic or single split */) {
 		writeOsmAndStructure_mapIndex_detailed_level_single_power_of_2_split(powerOf2Split, false /* detailed zoom */);
+	} else if (forceSplitMode == 1 /* 2-level quadtree */) {
+		writeOsmAndStructure_mapIndex_detailed_level_4_4_pow2_split(powerOf2Split, false /* detailed zoom */);
+	} else if (forceSplitMode == 2 /* 3-level quadtree */) {
+		writeOsmAndStructure_mapIndex_detailed_level_4_4_4_pow2_split(powerOf2Split, false /* detailed zoom */);
 	}
 	int64_t mapRootLevelSize = getFileSize(L"mapRootLevel");
 	writeOBFVarint32or64BE(mapIndexCos, mapRootLevelSize);
@@ -520,10 +539,13 @@ uint64_t writeMapIndex(string name) {
 	} else if (powerOf2Split >= 3) {
 		powerOf2Split -= 2;
 	}
-	if (shouldUseQuadtreeSplit) {
-		writeOsmAndStructure_mapIndex_detailed_level_4_4_4_pow2_split(powerOf2Split, true /* medium zoom */);
-	} else {
-		writeOsmAndStructure_mapIndex_detailed_level_single_power_of_2_split(powerOf2Split, true /* detailed zoom */);
+	if (forceSplitMode == -1 || forceSplitMode == 0 /* automatic or single split */) {
+		//writeOsmAndStructure_mapIndex_detailed_level_single_power_of_2_split(powerOf2Split, true /* detailed zoom */);
+		writeOsmAndStructure_mapIndex_detailed_level_4_4_pow2_split(powerOf2Split, true /* detailed zoom */);
+	} else if (forceSplitMode == 1 /* 2-level quadtree */) {
+		writeOsmAndStructure_mapIndex_detailed_level_4_4_pow2_split(powerOf2Split, true /* detailed zoom */);
+	} else if (forceSplitMode == 2 /* 3-level quadtree */) {
+		writeOsmAndStructure_mapIndex_detailed_level_4_4_4_pow2_split(powerOf2Split, true /* detailed zoom */);
 	}
 	mapRootLevelSize = getFileSize(L"mapRootLevel");
 	writeOBFVarint32or64BE(mapIndexCos, mapRootLevelSize);
@@ -673,7 +695,7 @@ void writeOsmAndStructure_mapIndex_detailed_level_single_power_of_2_split(int po
 
 	int splitSectionCount = 1 << pow2;
 	int totalBoxCount = 1 << (pow2 << 1);
-	cout << endl << "Using " << (shouldForceSingleSplit ? "user-defined" : "automatic") << " single " << splitSectionCount << "x" << splitSectionCount << " split (" << totalBoxCount << " box" << (totalBoxCount == 1 ? "" : "es") << ")";
+	cout << endl << "Using " << (forceSplitMode >= 0 ? "user-defined" : "automatic") << " single " << splitSectionCount << "x" << splitSectionCount << " split (" << totalBoxCount << " box" << (totalBoxCount == 1 ? "" : "es") << ")";
 
 	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kMaxZoomFieldNumber << 3));
 	mapRootLevelTempCos.WriteVarint32(mediumZoom ? 14 : 26);
@@ -888,7 +910,7 @@ void writeOsmAndStructure_mapIndex_detailed_level_4_4_pow2_split(int pow2, bool 
 
 	int splitSectionCount = 1 << pow2;
 	int totalBoxCount = (1 << (pow2 << 1)) << 4;
-	cout << endl << "Using " << (shouldForceQuadtreeSplit ? "user-defined" : "automatic") << " 4:4:" << splitSectionCount << "x" << splitSectionCount << " split (" << totalBoxCount << " data boxes)";
+	cout << endl << "Using " << (forceSplitMode >= 0 ? "user-defined" : "automatic") << " 4:4:" << splitSectionCount << "x" << splitSectionCount << " split (" << totalBoxCount << " data boxes)";
 
 	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kMaxZoomFieldNumber << 3));
 	mapRootLevelTempCos.WriteVarint32(mediumZoom ? 14 : 26);
@@ -920,7 +942,7 @@ void writeOsmAndStructure_mapIndex_detailed_level_4_4_pow2_split(int pow2, bool 
 			quadtreeLevel1Rectangles[(y * 2) + x].topInt32 = (overallBoundingRectangle.topInt32 + (y * (overallBoundingRectangle.heightInt32 / 2))) & 0xffffffe0;
 			quadtreeLevel1Rectangles[(y * 2) + x].bottomInt32 = (overallBoundingRectangle.topInt32 + ((y + 1) * (overallBoundingRectangle.heightInt32 / 2))) & 0xffffffe0;
 			quadtreeLevel1Rectangles[(y * 2) + x].calculateDoubleValuesFromInt32();
-			quadtreeLevel1Rectangles[(y * 2) + x].expandByAbsoluteValue(2000);
+			quadtreeLevel1Rectangles[(y * 2) + x].expandByAbsoluteValue(8000);
 			quadtreeLevel1Rectangles[(y * 2) + x].calculateMapDataBoxBytesSizeWithoutTagAndFixed32Size(&overallBoundingRectangle);
 			quadtreeLevel1Rectangles[(y * 2) + x].MapDataBoxBytesSizeWithoutTagAndFixed32Size -= (1 + 4); //Quadtree boxes don't have shiftToMapData
 			//if (!quiet) cout << endl << "Quadtree level 1 rectangle " << (((y * 2) + x) + 1) << ": " << quadtreeLevel1Rectangles[(y * 2) + x].left << ", " << quadtreeLevel1Rectangles[(y * 2) + x].right << ", " << quadtreeLevel1Rectangles[(y * 2) + x].bottom << ", " << quadtreeLevel1Rectangles[(y * 2) + x].top;
@@ -933,7 +955,7 @@ void writeOsmAndStructure_mapIndex_detailed_level_4_4_pow2_split(int pow2, bool 
 					quadtreeLevel2Rectangles[(((y * 2) + x) * 4) + (y2 * 2) + x2].topInt32 = (quadtreeLevel1Rectangles[(y * 2) + x].topInt32 + (y2 * (quadtreeLevel1Rectangles[(y * 2) + x].heightInt32 / 2))) & 0xffffffe0;
 					quadtreeLevel2Rectangles[(((y * 2) + x) * 4) + (y2 * 2) + x2].bottomInt32 = (quadtreeLevel1Rectangles[(y * 2) + x].topInt32 + ((y2 + 1) * (quadtreeLevel1Rectangles[(y * 2) + x].heightInt32 / 2))) & 0xffffffe0;
 					quadtreeLevel2Rectangles[(((y * 2) + x) * 4) + (y2 * 2) + x2].calculateDoubleValuesFromInt32();
-					quadtreeLevel2Rectangles[(((y * 2) + x) * 4) + (y2 * 2) + x2].expandByAbsoluteValue(2000);
+					quadtreeLevel2Rectangles[(((y * 2) + x) * 4) + (y2 * 2) + x2].expandByAbsoluteValue(8000);
 					quadtreeLevel2Rectangles[(((y * 2) + x) * 4) + (y2 * 2) + x2].calculateMapDataBoxBytesSizeWithoutTagAndFixed32Size(&(quadtreeLevel1Rectangles[(y * 2) + x]));
 					quadtreeLevel2Rectangles[(((y * 2) + x) * 4) + (y2 * 2) + x2].MapDataBoxBytesSizeWithoutTagAndFixed32Size -= (1 + 4);
 					for (unsigned int j = 0; j < splitSectionCount; j++) {
@@ -943,7 +965,7 @@ void writeOsmAndStructure_mapIndex_detailed_level_4_4_pow2_split(int pow2, bool 
 							rectangles[(((((y * 2) + x) * 4) + (y2 * 2) + x2) * (splitSectionCount * splitSectionCount)) + ((j * splitSectionCount) + i)].topInt32 = (quadtreeLevel2Rectangles[(((y * 2) + x) * 4) + (y2 * 2) + x2].topInt32 + (j * singleBoxHeight));
 							rectangles[(((((y * 2) + x) * 4) + (y2 * 2) + x2) * (splitSectionCount * splitSectionCount)) + ((j * splitSectionCount) + i)].bottomInt32 = (rectangles[(((((y * 2) + x) * 4) + (y2 * 2) + x2) * (splitSectionCount * splitSectionCount)) + ((j * splitSectionCount) + i)].topInt32 + singleBoxHeight);
 							rectangles[(((((y * 2) + x) * 4) + (y2 * 2) + x2) * (splitSectionCount * splitSectionCount)) + ((j * splitSectionCount) + i)].calculateDoubleValuesFromInt32();
-							rectangles[(((((y * 2) + x) * 4) + (y2 * 2) + x2) * (splitSectionCount * splitSectionCount)) + ((j * splitSectionCount) + i)].expandByAbsoluteValue(2000);
+							rectangles[(((((y * 2) + x) * 4) + (y2 * 2) + x2) * (splitSectionCount * splitSectionCount)) + ((j * splitSectionCount) + i)].expandByAbsoluteValue(8000);
 							rectangles[(((((y * 2) + x) * 4) + (y2 * 2) + x2) * (splitSectionCount * splitSectionCount)) + ((j * splitSectionCount) + i)].calculateMapDataBoxBytesSizeWithoutTagAndFixed32Size(&(quadtreeLevel2Rectangles[(((y * 2) + x) * 4) + (y2 * 2) + x2]));
 							//cout << endl << "Rectangle " << ((((((y * 2) + x) * 4) + (y2 * 2) + x2) * (splitSectionCount * splitSectionCount)) + ((j * splitSectionCount) + i));
 						}
@@ -1320,7 +1342,7 @@ void writeOsmAndStructure_mapIndex_detailed_level_4_4_4_pow2_split(int pow2, boo
 
 	int splitSectionCount = 1 << pow2;
 	int totalBoxCount = (1 << (pow2 << 1)) << 6;
-	cout << endl << "Using " << (shouldForceQuadtreeSplit ? "user-defined" : "automatic") << " 4:4:4:" << splitSectionCount << "x" << splitSectionCount << " split (" << totalBoxCount << " data boxes)";
+	cout << endl << "Using " << (forceSplitMode >= 0 ? "user-defined" : "automatic") << " 4:4:4:" << splitSectionCount << "x" << splitSectionCount << " split (" << totalBoxCount << " data boxes)";
 
 	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kMaxZoomFieldNumber << 3));
 	mapRootLevelTempCos.WriteVarint32(mediumZoom ? 14 : 26);
@@ -1353,7 +1375,7 @@ void writeOsmAndStructure_mapIndex_detailed_level_4_4_4_pow2_split(int pow2, boo
 			quadtreeLevel1Rectangles[(quadtreeLevel1Y * 2) + quadtreeLevel1X].topInt32 = (overallBoundingRectangle.topInt32 + (quadtreeLevel1Y * (overallBoundingRectangle.heightInt32 / 2))) & 0xffffffe0;
 			quadtreeLevel1Rectangles[(quadtreeLevel1Y * 2) + quadtreeLevel1X].bottomInt32 = (overallBoundingRectangle.topInt32 + ((quadtreeLevel1Y + 1) * (overallBoundingRectangle.heightInt32 / 2))) & 0xffffffe0;
 			quadtreeLevel1Rectangles[(quadtreeLevel1Y * 2) + quadtreeLevel1X].calculateDoubleValuesFromInt32();
-			quadtreeLevel1Rectangles[(quadtreeLevel1Y * 2) + quadtreeLevel1X].expandByAbsoluteValue(2000);
+			quadtreeLevel1Rectangles[(quadtreeLevel1Y * 2) + quadtreeLevel1X].expandByAbsoluteValue(8000);
 			quadtreeLevel1Rectangles[(quadtreeLevel1Y * 2) + quadtreeLevel1X].calculateMapDataBoxBytesSizeWithoutTagAndFixed32Size(&overallBoundingRectangle);
 			quadtreeLevel1Rectangles[(quadtreeLevel1Y * 2) + quadtreeLevel1X].MapDataBoxBytesSizeWithoutTagAndFixed32Size -= (1 + 4); //Quadtree boxes don't have shiftToMapData
 			//if (!quiet) cout << endl << "Quadtree level 1 rectangle " << (((quadtreeLevel1Y * 2) + quadtreeLevel1X) + 1) << ": " << quadtreeLevel1Rectangles[(quadtreeLevel1Y * 2) + quadtreeLevel1X].left << ", " << quadtreeLevel1Rectangles[(quadtreeLevel1Y * 2) + quadtreeLevel1X].right << ", " << quadtreeLevel1Rectangles[(quadtreeLevel1Y * 2) + quadtreeLevel1X].bottom << ", " << quadtreeLevel1Rectangles[(quadtreeLevel1Y * 2) + quadtreeLevel1X].top;
@@ -1366,7 +1388,7 @@ void writeOsmAndStructure_mapIndex_detailed_level_4_4_4_pow2_split(int pow2, boo
 					quadtreeLevel2Rectangles[(((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + (quadtreeLevel2Y * 2) + quadtreeLevel2X].topInt32 = (quadtreeLevel1Rectangles[(quadtreeLevel1Y * 2) + quadtreeLevel1X].topInt32 + (quadtreeLevel2Y * (quadtreeLevel1Rectangles[(quadtreeLevel1Y * 2) + quadtreeLevel1X].heightInt32 / 2))) & 0xffffffe0;
 					quadtreeLevel2Rectangles[(((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + (quadtreeLevel2Y * 2) + quadtreeLevel2X].bottomInt32 = (quadtreeLevel1Rectangles[(quadtreeLevel1Y * 2) + quadtreeLevel1X].topInt32 + ((quadtreeLevel2Y + 1) * (quadtreeLevel1Rectangles[(quadtreeLevel1Y * 2) + quadtreeLevel1X].heightInt32 / 2))) & 0xffffffe0;
 					quadtreeLevel2Rectangles[(((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + (quadtreeLevel2Y * 2) + quadtreeLevel2X].calculateDoubleValuesFromInt32();
-					quadtreeLevel2Rectangles[(((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + (quadtreeLevel2Y * 2) + quadtreeLevel2X].expandByAbsoluteValue(2000);
+					quadtreeLevel2Rectangles[(((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + (quadtreeLevel2Y * 2) + quadtreeLevel2X].expandByAbsoluteValue(8000);
 					quadtreeLevel2Rectangles[(((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + (quadtreeLevel2Y * 2) + quadtreeLevel2X].calculateMapDataBoxBytesSizeWithoutTagAndFixed32Size(&(quadtreeLevel1Rectangles[(quadtreeLevel1Y * 2) + quadtreeLevel1X]));
 					quadtreeLevel2Rectangles[(((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + (quadtreeLevel2Y * 2) + quadtreeLevel2X].MapDataBoxBytesSizeWithoutTagAndFixed32Size -= (1 + 4);
 					//if (!quiet) cout << endl << "\tQuadtree level 2 rectangle " << (((quadtreeLevel2Y * 2) + quadtreeLevel2X) + 1) << " (overall quadtree index " << ((((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + (quadtreeLevel2Y * 2) + quadtreeLevel2X) << "): " << quadtreeLevel2Rectangles[(((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + (quadtreeLevel2Y * 2) + quadtreeLevel2X].left << ", " << quadtreeLevel2Rectangles[(((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + (quadtreeLevel2Y * 2) + quadtreeLevel2X].right << ", " << quadtreeLevel2Rectangles[(((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + (quadtreeLevel2Y * 2) + quadtreeLevel2X].bottom << ", " << quadtreeLevel2Rectangles[(((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + (quadtreeLevel2Y * 2) + quadtreeLevel2X].top;
@@ -1378,7 +1400,7 @@ void writeOsmAndStructure_mapIndex_detailed_level_4_4_4_pow2_split(int pow2, boo
 							quadtreeLevel3Rectangles[(((((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + ((quadtreeLevel2Y * 2) + quadtreeLevel2X)) * 4) + ((quadtreeLevel3Y * 2) + quadtreeLevel3X)].topInt32 = (quadtreeLevel2Rectangles[(((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + (quadtreeLevel2Y * 2) + quadtreeLevel2X].topInt32 + (quadtreeLevel3Y * (quadtreeLevel2Rectangles[(((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + (quadtreeLevel2Y * 2) + quadtreeLevel2X].heightInt32 / 2))) & 0xffffffe0;
 							quadtreeLevel3Rectangles[(((((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + ((quadtreeLevel2Y * 2) + quadtreeLevel2X)) * 4) + ((quadtreeLevel3Y * 2) + quadtreeLevel3X)].bottomInt32 = (quadtreeLevel2Rectangles[(((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + (quadtreeLevel2Y * 2) + quadtreeLevel2X].topInt32 + ((quadtreeLevel3Y + 1) * (quadtreeLevel2Rectangles[(((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + (quadtreeLevel2Y * 2) + quadtreeLevel2X].heightInt32 / 2))) & 0xffffffe0;
 							quadtreeLevel3Rectangles[(((((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + ((quadtreeLevel2Y * 2) + quadtreeLevel2X)) * 4) + ((quadtreeLevel3Y * 2) + quadtreeLevel3X)].calculateDoubleValuesFromInt32();
-							quadtreeLevel3Rectangles[(((((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + ((quadtreeLevel2Y * 2) + quadtreeLevel2X)) * 4) + ((quadtreeLevel3Y * 2) + quadtreeLevel3X)].expandByAbsoluteValue(2000);
+							quadtreeLevel3Rectangles[(((((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + ((quadtreeLevel2Y * 2) + quadtreeLevel2X)) * 4) + ((quadtreeLevel3Y * 2) + quadtreeLevel3X)].expandByAbsoluteValue(8000);
 							quadtreeLevel3Rectangles[(((((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + ((quadtreeLevel2Y * 2) + quadtreeLevel2X)) * 4) + ((quadtreeLevel3Y * 2) + quadtreeLevel3X)].calculateMapDataBoxBytesSizeWithoutTagAndFixed32Size(&(quadtreeLevel2Rectangles[(((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + (quadtreeLevel2Y * 2) + quadtreeLevel2X]));
 							quadtreeLevel3Rectangles[(((((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + ((quadtreeLevel2Y * 2) + quadtreeLevel2X)) * 4) + ((quadtreeLevel3Y * 2) + quadtreeLevel3X)].MapDataBoxBytesSizeWithoutTagAndFixed32Size -= (1 + 4);
 							//if (!quiet) cout << endl << "\t\tQuadtree level 3 rectangle " << (((quadtreeLevel3Y * 2) + quadtreeLevel3X) + 1) << " (overall quadtree index " << ((((((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + ((quadtreeLevel2Y * 2) + quadtreeLevel2X)) * 4) + ((quadtreeLevel3Y * 2) + quadtreeLevel3X)) << "): " << quadtreeLevel3Rectangles[(((((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + ((quadtreeLevel2Y * 2) + quadtreeLevel2X)) * 4) + ((quadtreeLevel3Y * 2) + quadtreeLevel3X)].left << ", " << quadtreeLevel3Rectangles[(((((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + ((quadtreeLevel2Y * 2) + quadtreeLevel2X)) * 4) + ((quadtreeLevel3Y * 2) + quadtreeLevel3X)].right << ", " << quadtreeLevel3Rectangles[(((((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + ((quadtreeLevel2Y * 2) + quadtreeLevel2X)) * 4) + ((quadtreeLevel3Y * 2) + quadtreeLevel3X)].bottom << ", " << quadtreeLevel3Rectangles[(((((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + ((quadtreeLevel2Y * 2) + quadtreeLevel2X)) * 4) + ((quadtreeLevel3Y * 2) + quadtreeLevel3X)].top;

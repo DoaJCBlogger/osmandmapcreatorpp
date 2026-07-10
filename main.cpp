@@ -27,7 +27,8 @@
 
 using namespace std;
 void writeOBFVarint32or64BE(google::protobuf::io::CodedOutputStream &i, uint64_t n);
-uint64_t copyRawFileIntoCodedOutputStream(google::protobuf::io::CodedOutputStream &cos, string filename, uint64_t size);
+uint64_t copyRawFileIntoCodedOutputStream(google::protobuf::io::CodedOutputStream &cos, string filename, int64_t size);
+void copyRawInputStreamIntoCodedOutputStream(google::protobuf::io::CodedOutputStream &cos, istream *inputFile, int64_t size);
 __int64 getFileSize(const wchar_t* name);
 std::wstring utf8_to_wstring(const std::string& str);
 std::string wstring_to_utf8(const std::wstring& str);
@@ -173,7 +174,8 @@ struct MapDataBlockThreadInfo {
 	unsigned char *additionalTypesByteArrayPtrWithinThread;
 	unsigned char *stringNamesByteArrayPtrWithinThread;
 	bool mediumZoom;
-	MapDataBlockThreadInfo():tempFilename(""),rectangles(nullptr),rectanglesCount(0),rectanglesStartIdx(0),stride(0),dbConnection(nullptr),stmt(nullptr),threadID(0),coordinatesByteArrayPtrWithinThread(nullptr),typesByteArrayPtrWithinThread(nullptr),additionalTypesByteArrayPtrWithinThread(nullptr),stringNamesByteArrayPtrWithinThread(nullptr),mediumZoom(false){}
+	uint64_t *mapDataBlockSizes;
+	MapDataBlockThreadInfo():tempFilename(""),rectangles(nullptr),rectanglesCount(0),rectanglesStartIdx(0),stride(0),dbConnection(nullptr),stmt(nullptr),threadID(0),coordinatesByteArrayPtrWithinThread(nullptr),typesByteArrayPtrWithinThread(nullptr),additionalTypesByteArrayPtrWithinThread(nullptr),stringNamesByteArrayPtrWithinThread(nullptr),mediumZoom(false),mapDataBlockSizes(nullptr){}
 };
 
 void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRectangle *rectangle, sqlite3 *dbConnection, sqlite3_stmt *stmt, int threadID, unsigned char *coordinatesByteArrayPtrWithinThread, unsigned char *typesByteArrayPtrWithinThread, unsigned char *additionalTypesByteArrayPtrWithinThread, unsigned char *stringNamesByteArrayPtrWithinThread, bool mediumZoom);
@@ -204,6 +206,7 @@ static bool shouldForceQuadtreeSplit = false;
 static bool quiet = false;
 HWND hwndMainWin;
 uint32_t screenWidth, screenHeight;
+//static unsigned int threads = 4;
 
 struct SQLite3StatementDeleter {
 	void operator()(sqlite3_stmt* stmt) const {
@@ -215,7 +218,7 @@ struct SQLite3StatementDeleter {
 };
 
 int main(int argc, char** argv) {
-	cout << "OsmAndMapCreator++ v0.1.6" << endl;
+	cout << "OsmAndMapCreator++ v0.1.7" << endl;
 
 	uint64_t overallStartTime = GetSystemTimeAsUnixTime();
 
@@ -456,7 +459,7 @@ bool CALLBACK SetFont(HWND child, LPARAM font) {
 }
 
 void printHelp() {
-	cout << "OsmAndMapCreator++ version 0.1.6";
+	cout << "OsmAndMapCreator++ version 0.1.7";
 	cout << endl << endl << "This utility generates OBF map files for OsmAnd from an OpenStreetMap SQLite database";
 	cout << endl << endl << "Usage:";
 	cout << endl << "\t-i [path]\t\t\t\tInput filename (required)";
@@ -696,7 +699,7 @@ void writeOsmAndStructure_mapIndex_detailed_level_single_power_of_2_split(int po
 			rectangles[(y * splitSectionCount) + x].topInt32 = (overallBoundingRectangle.topInt32 + (y * singleBoxHeight)) - NODE_BLOCK_OVERLAP;
 			rectangles[(y * splitSectionCount) + x].bottomInt32 = (rectangles[(y * splitSectionCount) + x].topInt32 + singleBoxHeight + NODE_BLOCK_OVERLAP);
 			rectangles[(y * splitSectionCount) + x].calculateDoubleValuesFromInt32();
-			rectangles[(y * splitSectionCount) + x].expandByAbsoluteValue(40000); //40000 * 1/20 foot (2000 feet)
+			rectangles[(y * splitSectionCount) + x].expandByAbsoluteValue(2000); //2000 * 1/20 foot (100 feet)
 			rectangles[(y * splitSectionCount) + x].calculateMapDataBoxBytesSizeWithoutTagAndFixed32Size(&overallBoundingRectangle);
 			//cout << endl << "Rectangle " << (((y * splitSectionCount) + x) + 1) << " left, right, top, bottom:\t" << rectangles[(y * splitSectionCount) + x].left << ", " << rectangles[(y * splitSectionCount) + x].right << ", " << rectangles[(y * splitSectionCount) + x].top << ", " << rectangles[(y * splitSectionCount) + x].bottom;
 		}
@@ -747,6 +750,14 @@ void writeOsmAndStructure_mapIndex_detailed_level_single_power_of_2_split(int po
 
 	MapDataBlockThreadInfo threadInfo[4];
 	uintptr_t threadHandles[4];
+	threadInfo[0].dbConnection = thread0DBConnection;
+	threadInfo[0].stmt = thread0Stmt;
+	threadInfo[1].dbConnection = thread1DBConnection;
+	threadInfo[1].stmt = thread1Stmt;
+	threadInfo[2].dbConnection = thread2DBConnection;
+	threadInfo[2].stmt = thread2Stmt;
+	threadInfo[3].dbConnection = thread3DBConnection;
+	threadInfo[3].stmt = thread3Stmt;
 	for (int i = 0; i < 4; i++) {
 		threadInfo[i].rectangles = rectangles.get();
 		threadInfo[i].rectanglesCount = totalBoxCount;
@@ -758,15 +769,6 @@ void writeOsmAndStructure_mapIndex_detailed_level_single_power_of_2_split(int po
 		threadInfo[i].mediumZoom = mediumZoom;
 		threadHandles[i] = _beginthread(writeOsmAndStructure_mapIndex_levels_block_SingleSplitThreadWorker, 0, &threadInfo[i]);
 	}
-	
-	threadInfo[0].dbConnection = thread0DBConnection;
-	threadInfo[0].stmt = thread0Stmt;
-	threadInfo[1].dbConnection = thread1DBConnection;
-	threadInfo[1].stmt = thread1Stmt;
-	threadInfo[2].dbConnection = thread2DBConnection;
-	threadInfo[2].stmt = thread2Stmt;
-	threadInfo[3].dbConnection = thread3DBConnection;
-	threadInfo[3].stmt = thread3Stmt;
 
 	cout << endl << "Waiting for threads...";
 	for (int i = 0; i < 4; i++) WaitForSingleObject((HANDLE)threadHandles[i], INFINITE);
@@ -913,7 +915,7 @@ void writeOsmAndStructure_mapIndex_detailed_level_4_4_pow2_split(int pow2, bool 
 			quadtreeLevel1Rectangles[(y * 2) + x].topInt32 = (overallBoundingRectangle.topInt32 + (y * (overallBoundingRectangle.heightInt32 / 2))) & 0xffffffe0;
 			quadtreeLevel1Rectangles[(y * 2) + x].bottomInt32 = (overallBoundingRectangle.topInt32 + ((y + 1) * (overallBoundingRectangle.heightInt32 / 2))) & 0xffffffe0;
 			quadtreeLevel1Rectangles[(y * 2) + x].calculateDoubleValuesFromInt32();
-			quadtreeLevel1Rectangles[(y * 2) + x].expandByAbsoluteValue(40000);
+			quadtreeLevel1Rectangles[(y * 2) + x].expandByAbsoluteValue(2000);
 			quadtreeLevel1Rectangles[(y * 2) + x].calculateMapDataBoxBytesSizeWithoutTagAndFixed32Size(&overallBoundingRectangle);
 			quadtreeLevel1Rectangles[(y * 2) + x].MapDataBoxBytesSizeWithoutTagAndFixed32Size -= (1 + 4); //Quadtree boxes don't have shiftToMapData
 			//if (!quiet) cout << endl << "Quadtree level 1 rectangle " << (((y * 2) + x) + 1) << ": " << quadtreeLevel1Rectangles[(y * 2) + x].left << ", " << quadtreeLevel1Rectangles[(y * 2) + x].right << ", " << quadtreeLevel1Rectangles[(y * 2) + x].bottom << ", " << quadtreeLevel1Rectangles[(y * 2) + x].top;
@@ -926,7 +928,7 @@ void writeOsmAndStructure_mapIndex_detailed_level_4_4_pow2_split(int pow2, bool 
 					quadtreeLevel2Rectangles[(((y * 2) + x) * 4) + (y2 * 2) + x2].topInt32 = (quadtreeLevel1Rectangles[(y * 2) + x].topInt32 + (y2 * (quadtreeLevel1Rectangles[(y * 2) + x].heightInt32 / 2))) & 0xffffffe0;
 					quadtreeLevel2Rectangles[(((y * 2) + x) * 4) + (y2 * 2) + x2].bottomInt32 = (quadtreeLevel1Rectangles[(y * 2) + x].topInt32 + ((y2 + 1) * (quadtreeLevel1Rectangles[(y * 2) + x].heightInt32 / 2))) & 0xffffffe0;
 					quadtreeLevel2Rectangles[(((y * 2) + x) * 4) + (y2 * 2) + x2].calculateDoubleValuesFromInt32();
-					quadtreeLevel2Rectangles[(((y * 2) + x) * 4) + (y2 * 2) + x2].expandByAbsoluteValue(40000);
+					quadtreeLevel2Rectangles[(((y * 2) + x) * 4) + (y2 * 2) + x2].expandByAbsoluteValue(2000);
 					quadtreeLevel2Rectangles[(((y * 2) + x) * 4) + (y2 * 2) + x2].calculateMapDataBoxBytesSizeWithoutTagAndFixed32Size(&(quadtreeLevel1Rectangles[(y * 2) + x]));
 					quadtreeLevel2Rectangles[(((y * 2) + x) * 4) + (y2 * 2) + x2].MapDataBoxBytesSizeWithoutTagAndFixed32Size -= (1 + 4);
 					for (unsigned int j = 0; j < splitSectionCount; j++) {
@@ -936,7 +938,7 @@ void writeOsmAndStructure_mapIndex_detailed_level_4_4_pow2_split(int pow2, bool 
 							rectangles[(((((y * 2) + x) * 4) + (y2 * 2) + x2) * (splitSectionCount * splitSectionCount)) + ((j * splitSectionCount) + i)].topInt32 = (quadtreeLevel2Rectangles[(((y * 2) + x) * 4) + (y2 * 2) + x2].topInt32 + (j * singleBoxHeight));
 							rectangles[(((((y * 2) + x) * 4) + (y2 * 2) + x2) * (splitSectionCount * splitSectionCount)) + ((j * splitSectionCount) + i)].bottomInt32 = (rectangles[(((((y * 2) + x) * 4) + (y2 * 2) + x2) * (splitSectionCount * splitSectionCount)) + ((j * splitSectionCount) + i)].topInt32 + singleBoxHeight);
 							rectangles[(((((y * 2) + x) * 4) + (y2 * 2) + x2) * (splitSectionCount * splitSectionCount)) + ((j * splitSectionCount) + i)].calculateDoubleValuesFromInt32();
-							rectangles[(((((y * 2) + x) * 4) + (y2 * 2) + x2) * (splitSectionCount * splitSectionCount)) + ((j * splitSectionCount) + i)].expandByAbsoluteValue(40000);
+							rectangles[(((((y * 2) + x) * 4) + (y2 * 2) + x2) * (splitSectionCount * splitSectionCount)) + ((j * splitSectionCount) + i)].expandByAbsoluteValue(2000);
 							rectangles[(((((y * 2) + x) * 4) + (y2 * 2) + x2) * (splitSectionCount * splitSectionCount)) + ((j * splitSectionCount) + i)].calculateMapDataBoxBytesSizeWithoutTagAndFixed32Size(&(quadtreeLevel2Rectangles[(((y * 2) + x) * 4) + (y2 * 2) + x2]));
 							//cout << endl << "Rectangle " << ((((((y * 2) + x) * 4) + (y2 * 2) + x2) * (splitSectionCount * splitSectionCount)) + ((j * splitSectionCount) + i));
 						}
@@ -961,6 +963,7 @@ void writeOsmAndStructure_mapIndex_detailed_level_4_4_pow2_split(int pow2, bool 
 	sqlite3_open_v2(databaseFilename.c_str(), &thread1DBConnection, SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, NULL);
 	sqlite3_open_v2(databaseFilename.c_str(), &thread2DBConnection, SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, NULL);
 	sqlite3_open_v2(databaseFilename.c_str(), &thread3DBConnection, SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, NULL);
+	unique_ptr<uint64_t[]> mapDataBlockSizes = make_unique<uint64_t[]>(totalBoxCount);
 
 	/*unique_ptr<unsigned char[]> coordinatesByteArrayTmpUniquePtr = make_unique<unsigned char[]>(1048576);
 	unique_ptr<unsigned char[]> typesByteArrayTmpUniquePtr = make_unique<unsigned char[]>(1048576);
@@ -992,6 +995,14 @@ void writeOsmAndStructure_mapIndex_detailed_level_4_4_pow2_split(int pow2, bool 
 
 	MapDataBlockThreadInfo threadInfo[4];
 	uintptr_t threadHandles[4];
+	threadInfo[0].dbConnection = thread0DBConnection;
+	threadInfo[0].stmt = thread0Stmt;
+	threadInfo[1].dbConnection = thread1DBConnection;
+	threadInfo[1].stmt = thread1Stmt;
+	threadInfo[2].dbConnection = thread2DBConnection;
+	threadInfo[2].stmt = thread2Stmt;
+	threadInfo[3].dbConnection = thread3DBConnection;
+	threadInfo[3].stmt = thread3Stmt;
 	for (int i = 0; i < 4; i++) {
 		threadInfo[i].rectangles = rectangles.get();
 		threadInfo[i].rectanglesCount = totalBoxCount;
@@ -1001,23 +1012,16 @@ void writeOsmAndStructure_mapIndex_detailed_level_4_4_pow2_split(int pow2, bool 
 		threadInfo[i].additionalTypesByteArrayPtrWithinThread = additionalTypesByteArrayUniquePtrArrayForThreads[i].get();
 		threadInfo[i].stringNamesByteArrayPtrWithinThread = stringNamesByteArrayUniquePtrArrayForThreads[i].get();
 		threadInfo[i].mediumZoom = mediumZoom;
+		threadInfo[i].mapDataBlockSizes = mapDataBlockSizes.get();
 		threadHandles[i] = _beginthread(writeOsmAndStructure_mapIndex_levels_block_SingleSplitThreadWorker, 0, &threadInfo[i]);
 	}
 
-	threadInfo[0].dbConnection = thread0DBConnection;
-	threadInfo[0].stmt = thread0Stmt;
-	threadInfo[1].dbConnection = thread1DBConnection;
-	threadInfo[1].stmt = thread1Stmt;
-	threadInfo[2].dbConnection = thread2DBConnection;
-	threadInfo[2].stmt = thread2Stmt;
-	threadInfo[3].dbConnection = thread3DBConnection;
-	threadInfo[3].stmt = thread3Stmt;
+	
 
 	cout << endl << "Waiting for threads...";
 	for (int i = 0; i < 4; i++) WaitForSingleObject((HANDLE)threadHandles[i], INFINITE);
 	cout << "done";
-	unique_ptr<uint64_t[]> mapDataBlockSizes = make_unique<uint64_t[]>(totalBoxCount);
-	for (int i = 0; i < (totalBoxCount); i++) mapDataBlockSizes[i] = getFileSize(utf8_to_wstring(string("mapDataBlock" + to_string(i) + ".tmp")).c_str());
+	//for (int i = 0; i < (totalBoxCount); i++) mapDataBlockSizes[i] = getFileSize(utf8_to_wstring(string("mapDataBlock" + to_string(i) + ".tmp")).c_str());
 
 	if (thread0Stmt != nullptr) {
 		sqlite3_finalize(thread0Stmt);
@@ -1039,6 +1043,52 @@ void writeOsmAndStructure_mapIndex_detailed_level_4_4_pow2_split(int pow2, bool 
 	sqlite3_close(thread1DBConnection);
 	sqlite3_close(thread2DBConnection);
 	sqlite3_close(thread3DBConnection);
+	
+	//Dynamic threading code that we can enable later
+	/*sqlite3_stmt **threadStmt = new sqlite3_stmt*[threads];
+	sqlite3 **threadDBConnections = new sqlite3*[threads];
+	vector<unique_ptr<unsigned char[]>> coordinatesByteArrayUniquePtrArrayForThreads;
+	vector<unique_ptr<unsigned char[]>> typesByteArrayUniquePtrArrayForThreads;
+	vector<unique_ptr<unsigned char[]>> additionalTypesByteArrayUniquePtrArrayForThreads;
+	vector<unique_ptr<unsigned char[]>> stringNamesByteArrayUniquePtrArrayForThreads;
+	MapDataBlockThreadInfo *threadInfo = new MapDataBlockThreadInfo[threads];
+	uintptr_t *threadHandles = new uintptr_t[threads];
+	for (unsigned int i = 0; i < threads; i++) {
+		threadStmt[i] = nullptr;
+		sqlite3_open_v2(databaseFilename.c_str(), &(threadDBConnections[i]), SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, NULL);
+		coordinatesByteArrayUniquePtrArrayForThreads.emplace_back(make_unique<unsigned char[]>(1048576));
+		typesByteArrayUniquePtrArrayForThreads.emplace_back(make_unique<unsigned char[]>(1048576));
+		additionalTypesByteArrayUniquePtrArrayForThreads.emplace_back(make_unique<unsigned char[]>(1048576));
+		stringNamesByteArrayUniquePtrArrayForThreads.emplace_back(make_unique<unsigned char[]>(1048576));
+
+		threadInfo[i].dbConnection = threadDBConnections[i];
+		threadInfo[i].stmt = threadStmt[i];
+		threadInfo[i].rectangles = rectangles.get();
+		threadInfo[i].rectanglesCount = totalBoxCount;
+		threadInfo[i].threadID = i;
+		threadInfo[i].coordinatesByteArrayPtrWithinThread = coordinatesByteArrayUniquePtrArrayForThreads[i].get();
+		threadInfo[i].typesByteArrayPtrWithinThread = typesByteArrayUniquePtrArrayForThreads[i].get();
+		threadInfo[i].additionalTypesByteArrayPtrWithinThread = additionalTypesByteArrayUniquePtrArrayForThreads[i].get();
+		threadInfo[i].stringNamesByteArrayPtrWithinThread = stringNamesByteArrayUniquePtrArrayForThreads[i].get();
+		threadInfo[i].mediumZoom = mediumZoom;
+		threadHandles[i] = _beginthread(writeOsmAndStructure_mapIndex_levels_block_SingleSplitThreadWorker, 0, &(threadInfo[i]));
+	}
+
+	cout << endl << "Waiting for threads...";
+	for (int i = 0; i < threads; i++) WaitForSingleObject((HANDLE)threadHandles[i], INFINITE);
+	cout << "done";
+	unique_ptr<uint64_t[]> mapDataBlockSizes = make_unique<uint64_t[]>(totalBoxCount);
+	for (int i = 0; i < totalBoxCount; i++) mapDataBlockSizes[i] = getFileSize(utf8_to_wstring(string("mapDataBlock" + to_string(i) + ".tmp")).c_str());
+
+	delete[] threadInfo;
+	delete[] threadHandles;
+	for (unsigned int i = 0; i < threads; i++) {
+		if (threadStmt[i] != nullptr) sqlite3_finalize(threadStmt[i]);
+		threadStmt[i] = nullptr;
+		sqlite3_close(threadDBConnections[i]);
+	}
+	delete[] threadDBConnections;
+	delete[] threadStmt;*/
 
 	//MapRootLevel.boxes
 	//Write these after generating the data blocks so we don't have to wait to find the offsets
@@ -1215,20 +1265,64 @@ void writeOsmAndStructure_mapIndex_detailed_level_4_4_pow2_split(int pow2, bool 
 
 	//Write the MapDataBlocks
 	//We should delete the temp files as we copy them to save space
-	for (int i = 0; i < totalBoxCount; i++) {
-		mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kBlocksFieldNumber << 3) | 2);
-		mapRootLevelTempCos.WriteVarint32(mapDataBlockSizes[i]);
-		copyRawFileIntoCodedOutputStream(mapRootLevelTempCos, "mapDataBlock" + to_string(i) + ".tmp", mapDataBlockSizes[i]);
-		if (!shouldKeepTempFiles) remove(string("mapDataBlock" + to_string(i) + ".tmp").c_str());
+	{
+		ifstream thread1TempFile("thread0.tmp", ios::binary);
+		ifstream thread2TempFile("thread1.tmp", ios::binary);
+		ifstream thread3TempFile("thread2.tmp", ios::binary);
+		ifstream thread4TempFile("thread3.tmp", ios::binary);
+		uint32_t mapDataBlockSize;
+		for (int i = 0; i < totalBoxCount / 4; i++) {
+			mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kBlocksFieldNumber << 3) | 2);
+			thread1TempFile.read((char*)&mapDataBlockSize, 4);
+			mapDataBlockSize = swap_endian(mapDataBlockSize);
+			mapRootLevelTempCos.WriteVarint32(mapDataBlockSize);
+			copyRawInputStreamIntoCodedOutputStream(mapRootLevelTempCos, &thread1TempFile, mapDataBlockSize);
+
+			mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kBlocksFieldNumber << 3) | 2);
+			thread2TempFile.read((char*)&mapDataBlockSize, 4);
+			mapDataBlockSize = swap_endian(mapDataBlockSize);
+			mapRootLevelTempCos.WriteVarint32(mapDataBlockSize);
+			copyRawInputStreamIntoCodedOutputStream(mapRootLevelTempCos, &thread2TempFile, mapDataBlockSize);
+
+			mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kBlocksFieldNumber << 3) | 2);
+			thread3TempFile.read((char*)&mapDataBlockSize, 4);
+			mapDataBlockSize = swap_endian(mapDataBlockSize);
+			mapRootLevelTempCos.WriteVarint32(mapDataBlockSize);
+			copyRawInputStreamIntoCodedOutputStream(mapRootLevelTempCos, &thread3TempFile, mapDataBlockSize);
+
+			mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kBlocksFieldNumber << 3) | 2);
+			thread4TempFile.read((char*)&mapDataBlockSize, 4);
+			mapDataBlockSize = swap_endian(mapDataBlockSize);
+			mapRootLevelTempCos.WriteVarint32(mapDataBlockSize);
+			copyRawInputStreamIntoCodedOutputStream(mapRootLevelTempCos, &thread4TempFile, mapDataBlockSize);
+		}
+	}
+	if (!shouldKeepTempFiles) {
+		remove("thread0.tmp");
+		remove("thread1.tmp");
+		remove("thread2.tmp");
+		remove("thread3.tmp");
 	}
 }
 
 void writeOsmAndStructure_mapIndex_levels_block_SingleSplitThreadWorker(void *param) {
 	MapDataBlockThreadInfo *ptr = (MapDataBlockThreadInfo*)param;
+	uint64_t *mapDataBlockSizes = ptr->mapDataBlockSizes;
+	//It's better to save the MapDataBlocks to a larger temp file per-thread than separate ones because the "Size on disk" can be huge for a lot of small files
+	ofstream threadTempFile(string("thread" + to_string(ptr->threadID) + ".tmp"), ios::binary);
+	google::protobuf::io::OstreamOutputStream threadTempOstream(&threadTempFile);
+	google::protobuf::io::CodedOutputStream threadBlockCos(&threadTempOstream);
+	uint32_t fileSizeBE = 0;
 	for (int i = 0; i < ptr->rectanglesCount; i++) {
 		int blockIdx = (i * 4) + ptr->threadID;
 		if (blockIdx >= ptr->rectanglesCount) break;
 		writeOsmAndStructure_mapIndex_levels_block(string("mapDataBlock" + to_string(blockIdx) + ".tmp"), &ptr->rectangles[blockIdx], ptr->dbConnection, ptr->stmt, ptr->threadID, ptr->coordinatesByteArrayPtrWithinThread, ptr->typesByteArrayPtrWithinThread, ptr->additionalTypesByteArrayPtrWithinThread, ptr->stringNamesByteArrayPtrWithinThread, ptr->mediumZoom);
+		mapDataBlockSizes[blockIdx] = getFileSize(utf8_to_wstring(string("mapDataBlock" + to_string(blockIdx) + ".tmp")).c_str());
+		fileSizeBE = mapDataBlockSizes[blockIdx];
+		fileSizeBE = swap_endian(fileSizeBE);
+		threadBlockCos.WriteRaw(&fileSizeBE, 4);
+		copyRawFileIntoCodedOutputStream(threadBlockCos, "mapDataBlock" + to_string(blockIdx) + ".tmp", mapDataBlockSizes[blockIdx]);
+		if (!shouldKeepTempFiles) remove(string("mapDataBlock" + to_string(blockIdx) + ".tmp").c_str());
 	}
 }
 
@@ -1732,7 +1826,7 @@ void writeMapEncodingRule(string tag, string value, uint32_t minZoom) {
 	r.SerializeToCodedStream(&mapEncodingRuleCos);
 }
 
-uint64_t copyRawFileIntoCodedOutputStream(google::protobuf::io::CodedOutputStream &cos, string filename, uint64_t size) {
+uint64_t copyRawFileIntoCodedOutputStream(google::protobuf::io::CodedOutputStream &cos, string filename, int64_t size) {
 	//int64_t fileSize = getFileSize(utf8_to_wstring(filename).c_str());
 	if (size < 0) return -1;
 	uint32_t chunks = size / FILE_COPY_BUFFER_SIZE;
@@ -1752,6 +1846,26 @@ uint64_t copyRawFileIntoCodedOutputStream(google::protobuf::io::CodedOutputStrea
 		bytesWritten += partialChunkSize;
 	}
 	return bytesWritten;
+}
+
+void copyRawInputStreamIntoCodedOutputStream(google::protobuf::io::CodedOutputStream &cos, istream *inputFile, int64_t size) {
+	//int64_t fileSize = getFileSize(utf8_to_wstring(filename).c_str());
+	if (size < 0) return;
+	uint32_t chunks = size / FILE_COPY_BUFFER_SIZE;
+	uint64_t partialChunkSize = size % FILE_COPY_BUFFER_SIZE;
+	//cout << endl << "size=" << size << ", chunks=" << chunks << ", partialChunkSize=" << partialChunkSize;
+	uint64_t bytesWritten = 0;
+	boolean copyPartialChunk = partialChunkSize > 0;
+	for (int i = 0; i < chunks; i++) {
+		inputFile->read((char*)fileCopyBuffer, FILE_COPY_BUFFER_SIZE);
+		cos.WriteRaw(fileCopyBuffer, FILE_COPY_BUFFER_SIZE);
+		bytesWritten += FILE_COPY_BUFFER_SIZE;
+	}
+	if (copyPartialChunk) {
+		inputFile->read((char*)fileCopyBuffer, partialChunkSize);
+		cos.WriteRaw(fileCopyBuffer, partialChunkSize);
+		bytesWritten += partialChunkSize;
+	}
 }
 
 string humanReadableTimeFromSeconds(unsigned int seconds) {
@@ -1844,11 +1958,31 @@ double int32ToLongitude(uint64_t in, uint32_t zoom) {
 
 //Round the latitude and longitude int32 values to a multiple of 32 since the lower 5 bits are usually dropped anyway and preserving them introduces rounding errors
 static inline int32_t latitudeToInt32(double latitude, uint32_t zoom) {
-	return ((int32_t)(((((asinh(tan((latitude * PI) / 180) / (latitude < 0 ? -1.0 : 1.0)) / PI) - 1) * (1 << zoom)) / -2) * 1024)) & 0xffffffe0;
+	int32_t retVal = ((int32_t)(((((asinh(tan((latitude * PI) / 180) / (latitude < 0 ? -1.0 : 1.0)) / PI) - 1) * (1 << zoom)) / -2) * 1024));
+	unsigned int remainder = retVal & 0x1f;
+	/*if (remainder < 8) {
+		retVal -= 32;
+	} else if (remainder > 24) {
+		retVal += 32;
+	}*/
+	if (remainder >= 16) {
+		retVal += 32;
+	}
+	return retVal & 0xffffffe0;
 }
 
 static inline int32_t longitudeToInt32(double longitude, uint32_t zoom) {
-	return ((int32_t)(((longitude + 180.0) / 360.0) * (1 << zoom) * 1024.0)) & 0xffffffe0;
+	int32_t retVal = ((int32_t)(((longitude + 180.0) / 360.0) * (1 << zoom) * 1024.0));
+	unsigned int remainder = retVal & 0x1f;
+	/*if (remainder < 8) {
+		retVal -= 32;
+	} else if (remainder > 24) {
+		retVal += 32;
+	}*/
+	if (remainder >= 16) {
+		retVal -= 32;
+	}
+	return retVal & 0xffffffe0;
 }
 
 uint32_t getVarintRequiredBytes(uint64_t i) {

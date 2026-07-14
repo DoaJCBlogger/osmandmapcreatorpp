@@ -24,6 +24,9 @@
 #include <array>
 #include <process.h>
 #include <commctrl.h>
+#include <atomic>
+#include <iomanip>
+#include <sstream>
 
 using namespace std;
 void writeOBFVarint32or64BE(google::protobuf::io::CodedOutputStream &i, uint64_t n);
@@ -52,6 +55,8 @@ LRESULT CALLBACK WndProc(HWND hwndMainWin, UINT msg, WPARAM wParam, LPARAM lPara
 bool CALLBACK SetFont(HWND child, LPARAM font);
 void VWSimplify(vector<uint64_t> *nodeIDVector, vector<uint64_t> *latVector, vector<uint64_t> *lonVector, uint64_t minAreaX2);
 string humanReadableTimeFromSeconds(unsigned int seconds);
+void createOBFFile(void *param);
+void calculateTotalRectanglesForGUI();
 
 #define FILE_COPY_BUFFER_SIZE (32 * 1048576) //This needs the parentheses or it will evaluate the numbers separately
 #define PI 3.1415926535
@@ -183,7 +188,7 @@ struct MapDataBlockThreadInfo {
 	MapDataBlockThreadInfo():tempFilename(""),rectangles(nullptr),rectanglesCount(0),rectanglesStartIdx(0),stride(0),dbConnection(nullptr),stmt(nullptr),threadID(0),coordinatesByteArrayPtrWithinThread(nullptr),typesByteArrayPtrWithinThread(nullptr),additionalTypesByteArrayPtrWithinThread(nullptr),stringNamesByteArrayPtrWithinThread(nullptr),mediumZoom(false),mapDataBlockSizes(nullptr){}
 };
 
-void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRectangle *rectangle, sqlite3 *dbConnection, sqlite3_stmt *stmt, int threadID, unsigned char *coordinatesByteArrayPtrWithinThread, unsigned char *typesByteArrayPtrWithinThread, unsigned char *additionalTypesByteArrayPtrWithinThread, unsigned char *stringNamesByteArrayPtrWithinThread, bool mediumZoom);
+void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRectangle *rectangle, unsigned int blockIdx, sqlite3 *dbConnection, sqlite3_stmt *stmt, int threadID, unsigned char *coordinatesByteArrayPtrWithinThread, unsigned char *typesByteArrayPtrWithinThread, unsigned char *additionalTypesByteArrayPtrWithinThread, unsigned char *stringNamesByteArrayPtrWithinThread, bool mediumZoom);
 
 template <typename T>
 T swap_endian(T u) {
@@ -211,6 +216,36 @@ static bool quiet = false;
 HWND hwndMainWin;
 uint32_t screenWidth, screenHeight;
 //static unsigned int threads = 4;
+static unsigned int progressBitmapWidth, progressBitmapHeight, progressTotalRectangles;
+atomic<unsigned int> progressCompletedRectangles = {0};
+static unsigned char *progressBitmapPtr = nullptr;
+static bool shouldShowGUI = true;
+static unsigned int guiSelectedQuadtreeSplit = 0;
+static unsigned int guiSelectedSplitWithinQuadtree = 0;
+
+#define ID_STARTBTN 1
+#define ID_INPUT_FILENAME_FIELD 2
+#define ID_OUTPUT_FILENAME_FIELD 3
+#define WM_USER_REDRAW (WM_USER + 1)
+#define ID_QUADTREE_COMBOBOX 4
+#define ID_SPLIT_COMBOBOX 5
+#define ID_BROWSE_INPUT_FILE 6
+#define ID_BROWSE_OUTPUT_FILE 7
+
+static HWND hwndStartBtn;
+static HWND hwndInputFilenameLabel;
+static HWND hwndOutputFilenameLabel;
+static HWND hwndInputFilenameField;
+static HWND hwndOutputFilenameField;
+static HWND hwndSplitLabel;
+static HWND hwndQuadtreeCombobox;
+static HWND hwndSplitCombobox;
+static HWND hwndRectangleCountLabel;
+static HWND hwndDetailedVectorMapProgressLabel;
+static HWND hwndDetailedVectorMapProgressBar;
+static HWND hwndProgressPercentLabel;
+static HWND hwndInputFilenameBrowseButton;
+static HWND hwndOutputFilenameBrowseButton;
 
 struct SQLite3StatementDeleter {
 	void operator()(sqlite3_stmt* stmt) const {
@@ -221,21 +256,22 @@ struct SQLite3StatementDeleter {
 	}
 };
 
+string inputFilename = "";
+string outputFilename = "";
+bool foundInputFilenameArgument = false;
+bool foundOutputFilenameArgument = false;
+
 int main(int argc, char** argv) {
-	cout << "OsmAndMapCreator++ v0.1.8" << endl;
-
-	uint64_t overallStartTime = GetSystemTimeAsUnixTime();
-
-	string inputFilename = "";
-	string outputFilename = "";
-	bool foundInputFilenameArgument = false;
-	bool foundOutputFilenameArgument = false;
+	cout << "OsmAndMapCreator++ v0.1.9" << endl;
 
 	//If there is only 1 argument that is not the help option then assume that it's the input filename
 	if (argc == 2) {
 		filesystem::path inputFilePathTmp = string(argv[1]);
 		if (filesystem::exists(inputFilePathTmp)) {
 			inputFilename = string(argv[1]);
+			filesystem::path outputFilenamePath = inputFilename;
+			outputFilenamePath = outputFilenamePath.parent_path() / outputFilenamePath.stem();
+			outputFilename = outputFilenamePath.string() + ".obf";
 		} else {
 			string_view arg_view(argv[1]);
 			printHelp();
@@ -247,6 +283,9 @@ int main(int argc, char** argv) {
 			if ((arg_view == "-i"sv || arg_view == "-input"sv || arg_view == "--input"sv || arg_view == "/i"sv) && i < (argc - 1) /* Don't try to read past the end of the arguments */) {
 				inputFilename = string(argv[i + 1]);
 				foundInputFilenameArgument = true;
+				filesystem::path outputFilenamePath = inputFilename;
+				outputFilenamePath = outputFilenamePath.parent_path() / outputFilenamePath.stem();
+				outputFilename = outputFilenamePath.string() + ".obf";
 			}
 		
 			if ((arg_view == "-o"sv || arg_view == "-output"sv || arg_view == "--output"sv || arg_view == "/o"sv) && i < (argc - 1)) {
@@ -258,12 +297,12 @@ int main(int argc, char** argv) {
 				shouldKeepTempFiles = true;
 			}
 			
-			if ((arg_view == "-force-single-split"sv || arg_view == "--force-single-split"sv || arg_view == "/force-single-split"sv) && i < (argc - 1)) {
-				if (forceSplitMode < 0 /* single split*/) {
-					forceSplitMode = 0;
-					forcedSplitPowerOf2 = atoi(argv[i + 1]); //A forced quadtree split takes precedence
-				}
-			}
+			//if ((arg_view == "-force-single-split"sv || arg_view == "--force-single-split"sv || arg_view == "/force-single-split"sv) && i < (argc - 1)) {
+				//if (forceSplitMode < 0 /* single split*/) {
+					//forceSplitMode = 0;
+					//forcedSplitPowerOf2 = atoi(argv[i + 1]); //A forced quadtree split takes precedence
+				//}
+			//}
 			
 			if ((arg_view == "-force-quadtree2-split"sv || arg_view == "--force-quadtree2-split"sv || arg_view == "/force-quadtree2-split"sv) && i < (argc - 1)) {
 				if (forceSplitMode < 1 /* 2-level quadtree */) {
@@ -279,45 +318,91 @@ int main(int argc, char** argv) {
 				}
 			}
 			
+			if ((arg_view == "-nogui"sv || arg_view == "--nogui"sv || arg_view == "/nogui"sv || arg_view == "-no-gui"sv || arg_view == "--no-gui"sv || arg_view == "/no-gui"sv)) {
+				shouldShowGUI = false;
+			}
+			
 			if ((arg_view == "-quiet"sv || arg_view == "--quiet"sv || arg_view == "/quiet"sv)) {
 				quiet = true;
 			}
 		}
 	}
 	
-	/*INITCOMMONCONTROLSEX iccx;
-	iccx.dwSize = sizeof(INITCOMMONCONTROLSEX);
-	iccx.dwICC = ICC_LISTVIEW_CLASSES;
-	InitCommonControlsEx(&iccx);
-	
-	MSG  msg;
-	WNDCLASS wc = { 0 };
-	wc.lpszClassName = TEXT("OMCPPMainWin");
-	HINSTANCE hInstance = GetModuleHandle(NULL);
-	wc.hInstance = hInstance;
-	//windowBGBrush = CreateSolidBrush(mainGrayColor);
-	wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
-	wc.lpfnWndProc = WndProc;
-	RegisterClass(&wc);
-	screenWidth = GetSystemMetrics(SM_CXSCREEN);
-    screenHeight = GetSystemMetrics(SM_CYSCREEN);
-	uint32_t windowWidth, windowHeight;
-	windowWidth = 800;
-	windowHeight = 900;
-	hwndMainWin = CreateWindowW(wc.lpszClassName, L"OsmAndMapCreator++", WS_OVERLAPPEDWINDOW | WS_VISIBLE, 0, 0, windowWidth, windowHeight, 0, 0, hInstance, 0);
-	//wc.hCursor       = LoadCursor(0, IDC_ARROW);
-	while (GetMessage(&msg, NULL, 0, 0)) {
-		TranslateMessage(&msg);
-		DispatchMessage(&msg);
-	}*/
+	if (shouldShowGUI) {
+		INITCOMMONCONTROLSEX iccx;
+		iccx.dwSize = sizeof(INITCOMMONCONTROLSEX);
+		iccx.dwICC = ICC_LISTVIEW_CLASSES;
+		InitCommonControlsEx(&iccx);
 
+		MSG  msg;
+		WNDCLASS wc = { 0 };
+		wc.lpszClassName = TEXT("OMCPPMainWin");
+		HINSTANCE hInstance = GetModuleHandle(NULL);
+		wc.hInstance = hInstance;
+		wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+		wc.lpfnWndProc = WndProc;
+		RegisterClass(&wc);
+		screenWidth = GetSystemMetrics(SM_CXSCREEN);
+		screenHeight = GetSystemMetrics(SM_CYSCREEN);
+		uint32_t windowWidth, windowHeight;
+		windowWidth = 800;
+		windowHeight = 900;
+		hwndMainWin = CreateWindowW(wc.lpszClassName, L"OsmAndMapCreator++", WS_OVERLAPPEDWINDOW | WS_VISIBLE, 0, 0, windowWidth, windowHeight, 0, 0, hInstance, 0);
+		hwndStartBtn = CreateWindowEx(0, L"BUTTON", L"Convert", WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON, 650, 812, 120, 25, hwndMainWin, (HMENU)ID_STARTBTN, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
+		hwndInputFilenameLabel = CreateWindowEx(0, L"STATIC", L"Input filename", WS_CHILD | WS_VISIBLE | SS_LEFT, 12, 680, 200, 20, hwndMainWin, NULL, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
+		hwndOutputFilenameLabel = CreateWindowEx(0, L"STATIC", L"Output filename", WS_CHILD | WS_VISIBLE | SS_LEFT, 12, 710, 200, 20, hwndMainWin, NULL, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
+		hwndInputFilenameField = CreateWindowEx(WS_EX_CLIENTEDGE, L"EDIT", utf8_to_wstring(inputFilename).c_str(), WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_LEFT, 100, 680, 390, 20, hwndMainWin, (HMENU)ID_INPUT_FILENAME_FIELD, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
+		hwndOutputFilenameField = CreateWindowEx(WS_EX_CLIENTEDGE, L"EDIT", utf8_to_wstring(outputFilename).c_str(), WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_LEFT, 100, 708, 390, 20, hwndMainWin, (HMENU)ID_OUTPUT_FILENAME_FIELD, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
+		hwndSplitLabel = CreateWindowEx(0, L"STATIC", L"Split mode", WS_CHILD | WS_VISIBLE | SS_LEFT, 12, 740, 150, 20, hwndMainWin, NULL, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
+		hwndQuadtreeCombobox = CreateWindowEx(0, L"COMBOBOX", NULL, WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST, 100, 738, 140, 20, hwndMainWin, (HMENU)ID_QUADTREE_COMBOBOX, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
+		//SendMessage(hwndQuadtreeCombobox, CB_ADDSTRING, 0, (LPARAM)L"1-level quadtree 4:");
+		SendMessage(hwndQuadtreeCombobox, CB_ADDSTRING, 0, (LPARAM)L"2-level quadtree 4:4:");
+		SendMessage(hwndQuadtreeCombobox, CB_ADDSTRING, 0, (LPARAM)L"3-level quadtree 4:4:4:");
+		SendMessage(hwndQuadtreeCombobox, CB_SETCURSEL, (WPARAM)1, 0);
+		guiSelectedQuadtreeSplit = 1;
+		hwndSplitCombobox = CreateWindowEx(0, L"COMBOBOX", NULL, WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST, 250, 738, 240, 20, hwndMainWin, (HMENU)ID_SPLIT_COMBOBOX, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
+		SendMessage(hwndSplitCombobox, CB_ADDSTRING, 0, (LPARAM)L"Auto");
+		SendMessage(hwndSplitCombobox, CB_ADDSTRING, 0, (LPARAM)L"1x1 (single box)");
+		SendMessage(hwndSplitCombobox, CB_ADDSTRING, 0, (LPARAM)L"2x2 (4 boxes)");
+		SendMessage(hwndSplitCombobox, CB_ADDSTRING, 0, (LPARAM)L"4x4 (16 boxes)");
+		SendMessage(hwndSplitCombobox, CB_ADDSTRING, 0, (LPARAM)L"8x8 (64 boxes)");
+		SendMessage(hwndSplitCombobox, CB_ADDSTRING, 0, (LPARAM)L"16x16 (256 boxes)");
+		SendMessage(hwndSplitCombobox, CB_ADDSTRING, 0, (LPARAM)L"32x32 (1024 boxes)");
+		SendMessage(hwndSplitCombobox, CB_ADDSTRING, 0, (LPARAM)L"64x64 (4096 boxes; max recommended)");
+		SendMessage(hwndSplitCombobox, CB_ADDSTRING, 0, (LPARAM)L"128x128 (16384 boxes; very slow to render)");
+		//SendMessage(hwndSplitCombobox, CB_ADDSTRING, 0, (LPARAM)L"");
+		SendMessage(hwndSplitCombobox, CB_SETCURSEL, (WPARAM)0, 0);
+		guiSelectedSplitWithinQuadtree = 0;
+		hwndRectangleCountLabel = CreateWindowEx(0, L"STATIC", L"Data blocks", WS_CHILD | WS_VISIBLE | SS_LEFT, 500, 740, 200, 20, hwndMainWin, NULL, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
+		calculateTotalRectanglesForGUI();
+		hwndDetailedVectorMapProgressLabel = CreateWindowEx(0, L"STATIC", L"Detailed map", WS_CHILD | WS_VISIBLE | SS_LEFT, 12, 770, 85, 20, hwndMainWin, NULL, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
+		hwndDetailedVectorMapProgressBar = CreateWindowEx(0, PROGRESS_CLASS, NULL, WS_CHILD | WS_VISIBLE | SS_LEFT, 100, 768, 390, 20, hwndMainWin, NULL, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
+		hwndProgressPercentLabel = CreateWindowEx(0, L"STATIC", L"0%", WS_VISIBLE | WS_CHILD | SS_LEFT, 500, 770, 80, 20, hwndMainWin, NULL, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
+		SendMessage(hwndDetailedVectorMapProgressBar, PBM_SETRANGE, 0, (WPARAM)MAKELONG(0, 65535));
+		hwndInputFilenameBrowseButton = CreateWindowEx(0, L"BUTTON", L"Browse...", WS_TABSTOP | WS_VISIBLE | WS_CHILD, 500, 680, 80, 20, hwndMainWin, (HMENU)ID_BROWSE_INPUT_FILE, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
+		hwndOutputFilenameBrowseButton = CreateWindowEx(0, L"BUTTON", L"Browse...", WS_TABSTOP | WS_VISIBLE | WS_CHILD, 500, 708, 80, 20, hwndMainWin, (HMENU)ID_BROWSE_OUTPUT_FILE, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
+		EnumChildWindows(hwndMainWin, (WNDENUMPROC)SetFont, (LPARAM)GetStockObject(DEFAULT_GUI_FONT));
+		
+		while (GetMessage(&msg, NULL, 0, 0)) {
+			TranslateMessage(&msg);
+			DispatchMessage(&msg);
+		}
+		delete[] progressBitmapPtr;
+	} else {
+		createOBFFile(nullptr);
+	}
+	return 0;
+}
+
+void createOBFFile(void *param) {
+	uint64_t overallStartTime = GetSystemTimeAsUnixTime();
 	if (inputFilename.empty()) {
 		cout << endl << "A database filename is required";
-		return 0;
+		return;
 	}
 
 	filesystem::path inputFilePath = inputFilename;
-	
+
 	//Use a default output filename if the user didn't choose one
 	if (!foundOutputFilenameArgument) {
 		filesystem::path outputFilenamePath = inputFilename;
@@ -340,7 +425,7 @@ int main(int argc, char** argv) {
 	if (rc != SQLITE_OK) {
 		cout << endl << "Error opening database";
 		sqlite3_close(db);
-		return 1;
+		return;
 	}
 
 	//Get the overall bounding rectangle
@@ -351,7 +436,7 @@ int main(int argc, char** argv) {
 	rc = sqlite3_prepare_v2(db, query.c_str(), -1, &res, 0);
 	if (rc != SQLITE_OK) {
 		cout << endl << "Error while creating the overall bounding box prepared statement";
-		return 1;
+		return;
 	}
 
 	if (sqlite3_step(res) == SQLITE_ROW) {
@@ -360,10 +445,9 @@ int main(int argc, char** argv) {
 		overallBoundingRectangle.right = sqlite3_column_double(res, 2);
 		overallBoundingRectangle.top = sqlite3_column_double(res, 3);
 		overallBoundingRectangle.calculateInt32ValuesFromDouble();
-	}
-	else {
+	} else {
 		cout << endl << "Could not get the overall bounding rectangle";
-		return 1;
+		return;
 	}
 	sqlite3_finalize(res);
 	boundingRectangleTime = (GetSystemTimeAsUnixTime() - boundingRectangleStartTime) / 1000.0;
@@ -411,7 +495,34 @@ int main(int argc, char** argv) {
 	uint64_t overallEndTime = GetSystemTimeAsUnixTime();
 	double finishedSeconds = (overallEndTime - overallStartTime) / 1000.0;
 	cout << endl << "Finished in " << (finishedSeconds < 10 ? to_string(finishedSeconds) + " seconds" : humanReadableTimeFromSeconds(finishedSeconds));
-	return 0;
+}
+
+void calculateTotalRectanglesForGUI() {
+	unsigned int totalRectangles = 0;
+	wstring text = L"";
+	switch (guiSelectedQuadtreeSplit) {
+		case 0: //2-level quadtree
+			{
+				totalRectangles = 16;
+			}
+			break;
+		case 1: //3-level quadtree
+			{
+				totalRectangles = 64;
+			}
+			break;
+	}
+
+	if (guiSelectedSplitWithinQuadtree == 0 /* Auto */) {
+		text = L"At least " + to_wstring((unsigned long)totalRectangles) + L" data blocks";
+	} else {
+		/*switch (guiSelectedSplitWithinQuadtree) {
+
+		}*/
+		totalRectangles *= ((1 << (guiSelectedSplitWithinQuadtree - 1)) * (1 << (guiSelectedSplitWithinQuadtree - 1)));
+		text = to_wstring((unsigned long)totalRectangles) + L" data blocks";
+	}
+	SetWindowText(hwndRectangleCountLabel, text.c_str());
 }
 
 LRESULT CALLBACK WndProc(HWND hwndMainWin, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -442,19 +553,180 @@ LRESULT CALLBACK WndProc(HWND hwndMainWin, UINT msg, WPARAM wParam, LPARAM lPara
 			break;
 		case WM_PAINT:
 			{
-				hdc = BeginPaint(hwndMainWin, &ps);
-				originalGDIObj = SelectObject(hdc, GetStockObject(DC_PEN));
-				HBRUSH blackBrush = CreateSolidBrush(RGB(0, 0, 0));
-				SelectObject(hdc, blackBrush);
-				SetDCPenColor(hdc, RGB(0, 0, 0));
-				SetBkColor(hdc, RGB(0, 0, 0));
-				Rectangle(hdc, 100, 100, 100, 100);
-				//Cleanup once the paint operation is done
-				//DeleteObject(authTokenBoxColor);
-				DeleteObject(blackBrush);
-				SelectObject(hdc, originalGDIObj);
-				EndPaint(hwndMainWin, &ps);
-				//repaintFullWindow();
+				{
+					PAINTSTRUCT ps;
+					HDC hdc = BeginPaint(hwndMainWin, &ps);
+					RECT windowRect;
+					HGDIOBJ hOldPen;
+					HGDIOBJ hOldBrush;
+					unsigned int progressAreaWidth, progressAreaHeight;
+					GetWindowRect(hwndMainWin, &windowRect);
+					progressAreaWidth = (windowRect.right - windowRect.left) - 28;
+					progressAreaHeight = (windowRect.bottom - windowRect.top) - 250;
+					if (progressBitmapWidth > 0 && progressBitmapHeight > 0) {
+						SetStretchBltMode(hdc, COLORONCOLOR);
+						HDC progressImageHDC = CreateCompatibleDC(hdc);
+						BITMAP bm;
+						bm.bmType = 0;
+						bm.bmWidth = progressBitmapWidth;
+						bm.bmHeight = progressBitmapHeight;
+						bm.bmWidthBytes = progressBitmapWidth * 4;
+						bm.bmPlanes = 1;
+						bm.bmBitsPixel = 32;
+						bm.bmBits = progressBitmapPtr;
+						HBITMAP progressBitmap = CreateBitmapIndirect(&bm);
+						SelectObject(progressImageHDC, progressBitmap);
+						StretchBlt(hdc, 12, 12, progressAreaWidth - 12, progressAreaHeight - 12, progressImageHDC, 0, 0, progressBitmapWidth, progressBitmapHeight, SRCCOPY);
+						DeleteObject(progressBitmap);
+						DeleteDC(progressImageHDC);
+					} else {
+						HBRUSH hBrush = CreateSolidBrush(RGB(255, 255, 255));
+						hOldPen = SelectObject(hdc, GetStockObject(NULL_PEN));
+						hOldBrush = SelectObject(hdc, hBrush);
+						Rectangle(hdc, 12, 12, progressAreaWidth + 1, progressAreaHeight + 1);
+						SelectObject(hdc, hOldPen);
+						SelectObject(hdc, hOldBrush);
+						DeleteObject(hBrush);
+					}
+
+					//Draw the 3D edge
+					MoveToEx(hdc, 10, 10, NULL);
+					HPEN lightGrayOuterBorderColor = CreatePen(PS_SOLID, 1, RGB(208, 208, 208));
+					HPEN lightGrayMiddleBorderColor = CreatePen(PS_SOLID, 1, RGB(128, 128, 128));
+					HPEN darkGrayInnerBorderColor = CreatePen(PS_SOLID, 1, RGB(64, 64, 64));
+					hOldPen = SelectObject(hdc, lightGrayOuterBorderColor);
+					hOldBrush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+					Rectangle(hdc, 10, 10, progressAreaWidth + 2, progressAreaHeight + 2);
+					SelectObject(hdc, lightGrayMiddleBorderColor);
+					MoveToEx(hdc, 11, 11, NULL);
+					LineTo(hdc, progressAreaWidth, 11);
+					SelectObject(hdc, darkGrayInnerBorderColor);
+					MoveToEx(hdc, 12, 12, NULL);
+					LineTo(hdc, progressAreaWidth - 1, 12);
+					MoveToEx(hdc, 10, 11, NULL);
+					SelectObject(hdc, lightGrayOuterBorderColor);
+					SelectObject(hdc, lightGrayMiddleBorderColor);
+					MoveToEx(hdc, 11, 12, NULL);
+					LineTo(hdc, 11, progressAreaHeight);
+					MoveToEx(hdc, 12, 13, NULL);
+					SelectObject(hdc, darkGrayInnerBorderColor);
+					LineTo(hdc, 12, progressAreaHeight - 1);
+					MoveToEx(hdc, 12, progressAreaHeight - 1, NULL);
+					SelectObject(hdc, lightGrayOuterBorderColor);
+					LineTo(hdc, progressAreaWidth, progressAreaHeight - 1);
+					MoveToEx(hdc, progressAreaWidth - 1, 12, NULL);
+					SelectObject(hdc, lightGrayOuterBorderColor);
+					LineTo(hdc, progressAreaWidth - 1, progressAreaHeight);
+					MoveToEx(hdc, 11, progressAreaHeight, NULL);
+					SelectObject(hdc, GetStockObject(WHITE_PEN));
+					LineTo(hdc, progressAreaWidth - 1, progressAreaHeight);
+					SelectObject(hdc, hOldBrush);
+					SelectObject(hdc, hOldPen);
+					DeleteObject(lightGrayOuterBorderColor);
+					DeleteObject(lightGrayMiddleBorderColor);
+					DeleteObject(darkGrayInnerBorderColor);
+					
+					EndPaint(hwndMainWin, &ps);
+				}
+			}
+			break;
+		case WM_SIZE:
+			{
+				RECT windowRect;
+				unsigned int windowWidth, windowHeight;
+				GetWindowRect(hwndMainWin, &windowRect);
+				windowWidth = windowRect.right - windowRect.left;
+				windowHeight = windowRect.bottom - windowRect.top;
+				MoveWindow(hwndStartBtn, (windowWidth - 150), (windowHeight - 88), 120, 25, TRUE);
+				MoveWindow(hwndInputFilenameLabel, 12, (windowHeight - 220), 200, 20, TRUE);
+				MoveWindow(hwndOutputFilenameLabel, 12, (windowHeight - 190), 200, 20, TRUE);
+				MoveWindow(hwndInputFilenameField, 100, (windowHeight - 220), 390, 20, TRUE);
+				MoveWindow(hwndOutputFilenameField, 100, (windowHeight - 192), 390, 20, TRUE);
+				MoveWindow(hwndSplitLabel, 12, (windowHeight - 160), 150, 20, TRUE);
+				MoveWindow(hwndQuadtreeCombobox, 100, (windowHeight - 162), 140, 20, TRUE);
+				MoveWindow(hwndSplitCombobox, 250, (windowHeight - 162), 240, 20, TRUE);
+				MoveWindow(hwndRectangleCountLabel, 500, (windowHeight - 160), 200, 20, TRUE);
+				MoveWindow(hwndDetailedVectorMapProgressLabel, 12, (windowHeight - 130), 85, 20, TRUE);
+				MoveWindow(hwndDetailedVectorMapProgressBar, 100, (windowHeight - 132), 390, 20, TRUE);
+				MoveWindow(hwndProgressPercentLabel, 500, (windowHeight - 130), 80, 20, TRUE);
+				MoveWindow(hwndInputFilenameBrowseButton, 500, (windowHeight - 220), 80, 20, TRUE);
+				MoveWindow(hwndOutputFilenameBrowseButton, 500, (windowHeight - 192), 80, 20, TRUE);
+				InvalidateRect(hwndMainWin, NULL, TRUE);
+				UpdateWindow(hwndMainWin);
+			}
+			break;
+		case WM_COMMAND:
+			{
+				if (HIWORD(wParam) == BN_CLICKED) {
+					switch (LOWORD(wParam)) {
+						case ID_STARTBTN:
+							{
+								WCHAR buffer[MAX_PATH];
+								GetWindowText(hwndInputFilenameField, buffer, MAX_PATH);
+								inputFilename = wstring_to_utf8(wstring(buffer));
+								GetWindowText(hwndOutputFilenameField, buffer, MAX_PATH);
+								outputFilename = wstring_to_utf8(wstring(buffer));
+								_beginthread(createOBFFile, 0, nullptr);
+							}
+							break;
+						case ID_BROWSE_INPUT_FILE:
+							{
+								OPENFILENAME ofn;
+								TCHAR szFileName[MAX_PATH] = L"";
+								ZeroMemory(&ofn, sizeof(ofn));
+								ofn.lStructSize = sizeof(ofn);
+								ofn.hwndOwner = hwndMainWin;
+								ofn.lpstrFilter = L"SQLite Database Files (*.db)\0*.db\0All Files (*.*)\0*.*\0";
+								ofn.lpstrFile = szFileName;
+								ofn.nMaxFile = MAX_PATH;
+								ofn.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_HIDEREADONLY;
+								ofn.lpstrDefExt = L"db";
+								if (GetOpenFileName(&ofn)) SetWindowText(hwndInputFilenameField, szFileName);
+								if (GetWindowTextLength(hwndOutputFilenameField) == 0) {
+									filesystem::path outputFilenamePath = wstring(szFileName);
+									outputFilenamePath = outputFilenamePath.parent_path() / outputFilenamePath.stem();
+									outputFilename = outputFilenamePath.string() + ".obf";
+									SetWindowText(hwndOutputFilenameField, utf8_to_wstring(outputFilename).c_str());
+								}
+							}
+							break;
+						case ID_BROWSE_OUTPUT_FILE:
+							{
+								OPENFILENAME ofn;
+								TCHAR szFileName[MAX_PATH] = L"";
+								ZeroMemory(&ofn, sizeof(ofn));
+								ofn.lStructSize = sizeof(ofn);
+								ofn.hwndOwner = hwndMainWin;
+								ofn.lpstrFilter = L"OsmAnd OBF Files (*.obf)\0*.obf\0All Files (*.*)\0*.*\0";
+								ofn.lpstrFile = szFileName;
+								ofn.nMaxFile = MAX_PATH;
+								ofn.Flags = OFN_EXPLORER | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY | OFN_OVERWRITEPROMPT;
+								ofn.lpstrDefExt = L"obf";
+								if (GetSaveFileName(&ofn)) SetWindowText(hwndOutputFilenameField, szFileName);
+							}
+							break;
+					}
+				}
+
+				if (LOWORD(wParam) == ID_QUADTREE_COMBOBOX) {
+					guiSelectedQuadtreeSplit = SendMessage(hwndQuadtreeCombobox, CB_GETCURSEL, 0, 0);
+					calculateTotalRectanglesForGUI();
+				} else if (LOWORD(wParam) == ID_SPLIT_COMBOBOX) {
+					guiSelectedSplitWithinQuadtree = SendMessage(hwndSplitCombobox, CB_GETCURSEL, 0, 0);
+					calculateTotalRectanglesForGUI();
+				}
+			}
+			break;
+		case WM_USER_REDRAW:
+			{
+				SendMessage(hwndDetailedVectorMapProgressBar, PBM_SETPOS, (WPARAM)((unsigned int)((progressCompletedRectangles * 65535) / progressTotalRectangles)), 0);
+				ostringstream percentStream;
+				percentStream << fixed << setprecision(3) << ((progressCompletedRectangles * 100.0) / progressTotalRectangles);
+				wstring percentString = utf8_to_wstring(percentStream.str());
+				percentString += L"%";
+				SendMessage(hwndProgressPercentLabel, WM_SETTEXT, 0, (LPARAM)percentString.c_str());
+				InvalidateRect(hwndMainWin, NULL, TRUE);
+				UpdateWindow(hwndMainWin);
 			}
 			break;
 		case WM_DESTROY:
@@ -464,25 +736,22 @@ LRESULT CALLBACK WndProc(HWND hwndMainWin, UINT msg, WPARAM wParam, LPARAM lPara
 	return DefWindowProc(hwndMainWin, msg, wParam, lParam);
 }
 
-void repaintFullWindow() {
-
-}
-
 bool CALLBACK SetFont(HWND child, LPARAM font) {
 	SendMessage(child, WM_SETFONT, font, true);
 	return true;
 }
 
 void printHelp() {
-	cout << "OsmAndMapCreator++ version 0.1.8";
+	cout << "OsmAndMapCreator++ version 0.1.9";
 	cout << endl << endl << "This utility generates OBF map files for OsmAnd from an OpenStreetMap SQLite database";
 	cout << endl << endl << "Usage:";
 	cout << endl << "\t-i [path]\t\t\t\tInput filename (required)";
 	cout << endl << "\t-o [path]\t\t\t\tOutput filename";
 	cout << endl << "\t--keep-temp-files\t\t\tPreserve temp files for debugging (disabled by default)";
-	cout << endl << "\t--force-single-split [integer]\t\tForce a single power-of-2 split (for example, 2 would be 4x4)";
+	//cout << endl << "\t--force-single-split [integer]\t\tForce a single power-of-2 split (for example, 2 would be 4x4)";
 	cout << endl << "\t--force-quadtree2-split [integer]\tForce a 2-level quadtree split with a power-of-2 split in each section (for example, 2 would be 4:4:4x4). Takes precedence when combined with --force-single-split";
 	cout << endl << "\t--force-quadtree3-split [integer]\tForce a 3-level quadtree split with a power-of-2 split in each section (for example, 2 would be 4:4:4:4x4). Takes precedence when combined with --force-quadtree2-split or --force-single-split";
+	cout << endl << "\t--no-gui\t\t\t\tOnly show the command-line window";
 	cout << endl << "\t-h\t\t\t\t\tPrint this message";
 }
 
@@ -679,7 +948,7 @@ void writeOsmAndStructure_mapIndex_detailed_level_1x1(unsigned char *coordinates
 
 	//MapRootLevel.blocks
 	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kBlocksFieldNumber << 3) | 2);
-	writeOsmAndStructure_mapIndex_levels_block("mapDataBlock", &overallBoundingRectangle, db, res, 0, coordinatesByteArrayPtrWithinThread, typesByteArrayPtrWithinThread, additionalTypesByteArrayPtrWithinThread, stringNamesByteArrayPtrWithinThread, false);
+	writeOsmAndStructure_mapIndex_levels_block("mapDataBlock", &overallBoundingRectangle, 0, db, res, 0, coordinatesByteArrayPtrWithinThread, typesByteArrayPtrWithinThread, additionalTypesByteArrayPtrWithinThread, stringNamesByteArrayPtrWithinThread, false);
 	uint64_t mapDataBlockSize = getFileSize(L"mapDataBlock");
 	mapRootLevelTempCos.WriteVarint32(mapDataBlockSize);
 	copyRawFileIntoCodedOutputStream(mapRootLevelTempCos, "mapDataBlock", mapDataBlockSize);
@@ -1342,6 +1611,13 @@ void writeOsmAndStructure_mapIndex_detailed_level_4_4_4_pow2_split(int pow2, boo
 
 	int splitSectionCount = 1 << pow2;
 	int totalBoxCount = (1 << (pow2 << 1)) << 6;
+	progressBitmapWidth = 2 * 2 * 2 * splitSectionCount;
+	progressBitmapHeight = 2 * 2 * 2 * splitSectionCount;
+	if (shouldShowGUI) {
+		delete[] progressBitmapPtr;
+		progressBitmapPtr = new unsigned char[progressBitmapWidth * progressBitmapHeight * 4];
+		memset(progressBitmapPtr, 255, (progressBitmapWidth * progressBitmapHeight * 4));
+	}
 	cout << endl << "Using " << (forceSplitMode >= 0 ? "user-defined" : "automatic") << " 4:4:4:" << splitSectionCount << "x" << splitSectionCount << " split (" << totalBoxCount << " data boxes)";
 
 	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kMaxZoomFieldNumber << 3));
@@ -1478,6 +1754,8 @@ void writeOsmAndStructure_mapIndex_detailed_level_4_4_4_pow2_split(int pow2, boo
 	threadInfo[2].stmt = thread2Stmt;
 	threadInfo[3].dbConnection = thread3DBConnection;
 	threadInfo[3].stmt = thread3Stmt;
+	progressCompletedRectangles.store(0);
+	progressTotalRectangles = totalBoxCount;
 	for (int i = 0; i < 4; i++) {
 		threadInfo[i].rectangles = rectangles.get();
 		threadInfo[i].rectanglesCount = totalBoxCount;
@@ -1825,7 +2103,10 @@ void writeOsmAndStructure_mapIndex_levels_block_SingleSplitThreadWorker(void *pa
 	for (int i = 0; i < ptr->rectanglesCount; i++) {
 		int blockIdx = (i * 4) + ptr->threadID;
 		if (blockIdx >= ptr->rectanglesCount) break;
-		writeOsmAndStructure_mapIndex_levels_block(string("mapDataBlock" + to_string(blockIdx) + ".tmp"), &ptr->rectangles[blockIdx], ptr->dbConnection, ptr->stmt, ptr->threadID, ptr->coordinatesByteArrayPtrWithinThread, ptr->typesByteArrayPtrWithinThread, ptr->additionalTypesByteArrayPtrWithinThread, ptr->stringNamesByteArrayPtrWithinThread, ptr->mediumZoom);
+		PostMessage(hwndMainWin, WM_USER_REDRAW, NULL, NULL);
+		writeOsmAndStructure_mapIndex_levels_block(string("mapDataBlock" + to_string(blockIdx) + ".tmp"), &ptr->rectangles[blockIdx], blockIdx, ptr->dbConnection, ptr->stmt, ptr->threadID, ptr->coordinatesByteArrayPtrWithinThread, ptr->typesByteArrayPtrWithinThread, ptr->additionalTypesByteArrayPtrWithinThread, ptr->stringNamesByteArrayPtrWithinThread, ptr->mediumZoom);
+		progressCompletedRectangles.fetch_add(1, memory_order_relaxed);
+		PostMessage(hwndMainWin, WM_USER_REDRAW, NULL, NULL);
 		mapDataBlockSizes[blockIdx] = getFileSize(utf8_to_wstring(string("mapDataBlock" + to_string(blockIdx) + ".tmp")).c_str());
 		fileSizeBE = mapDataBlockSizes[blockIdx];
 		fileSizeBE = swap_endian(fileSizeBE);
@@ -1835,12 +2116,19 @@ void writeOsmAndStructure_mapIndex_levels_block_SingleSplitThreadWorker(void *pa
 	}
 }
 
-void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRectangle *rectangle, sqlite3 *dbConnection, sqlite3_stmt *stmt, int threadID, unsigned char *coordinatesByteArrayPtrWithinThread, unsigned char *typesByteArrayPtrWithinThread, unsigned char *additionalTypesByteArrayPtrWithinThread, unsigned char *stringNamesByteArrayPtrWithinThread, bool mediumZoom) {
+void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRectangle *rectangle, unsigned int blockIdx, sqlite3 *dbConnection, sqlite3_stmt *stmt, int threadID, unsigned char *coordinatesByteArrayPtrWithinThread, unsigned char *typesByteArrayPtrWithinThread, unsigned char *additionalTypesByteArrayPtrWithinThread, unsigned char *stringNamesByteArrayPtrWithinThread, bool mediumZoom) {
 	remove(tempFilename.c_str());
 	ofstream mapDataBlockTemp(tempFilename, ios::binary);
 	google::protobuf::io::OstreamOutputStream mapDataBlockTempOstream(&mapDataBlockTemp);
 	google::protobuf::io::CodedOutputStream mapDataBlockCos(&mapDataBlockTempOstream);
 	
+	if (shouldShowGUI) {
+		progressBitmapPtr[(blockIdx * 4)] = 0xe0;
+		progressBitmapPtr[(blockIdx * 4) + 1] = 0xe0;
+		progressBitmapPtr[(blockIdx * 4) + 2] = 0;
+		progressBitmapPtr[(blockIdx * 4) + 3] = 255;
+	}
+
 	bool shouldSkipBlock = false;
 	int rc = sqlite3_prepare_v2(dbConnection, "select sum(c) from (select exists(select * from rtree_node q1 inner join node_tags q2 on q2.node_id=q1.node_id where (max_lat >= :bottom and min_lat <= :top) and (max_lon >= :left and min_lon <= :right)) as c union all select exists(select * from rtree_node q1 inner join way_nodes q3 on q3.node_id=q1.node_id where q3.node_order=1 and (max_lat >= :bottom and min_lat <= :top) and (max_lon >= :left and min_lon <= :right)) as c)", -1, &stmt, 0);
 	sqlite3_bind_double(stmt, sqlite3_bind_parameter_index(stmt, ":left"), rectangle->left);
@@ -1850,6 +2138,12 @@ void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRec
 	if ((rc = sqlite3_step(stmt)) != SQLITE_ROW || sqlite3_column_int(stmt, 0) == 0) {
 		if (!quiet) cout << endl << "Skipping block";
 		shouldSkipBlock = true;
+		if (shouldShowGUI) {
+			progressBitmapPtr[(blockIdx * 4)] = 0xc0;
+			progressBitmapPtr[(blockIdx * 4) + 1] = 0xc0;
+			progressBitmapPtr[(blockIdx * 4) + 2] = 0xc0;
+			progressBitmapPtr[(blockIdx * 4) + 3] = 255;
+		}
 	}
 	sqlite3_finalize(stmt);
 	stmt = nullptr;
@@ -2274,6 +2568,12 @@ void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRec
 		mapDataBlockCos.WriteVarint32(stringTableSize);
 		copyRawFileIntoCodedOutputStream(mapDataBlockCos, "mapDataBlockStringTable_" + tempFilename, stringTableSize);
 		if (!shouldKeepTempFiles) remove(string("mapDataBlockStringTable_" + tempFilename).c_str());
+	}
+	if (shouldShowGUI && !shouldSkipBlock) {
+		progressBitmapPtr[(blockIdx * 4)] = 0;
+		progressBitmapPtr[(blockIdx * 4) + 1] = 0xc0;
+		progressBitmapPtr[(blockIdx * 4) + 2] = 0x00;
+		progressBitmapPtr[(blockIdx * 4) + 3] = 255;
 	}
 }
 

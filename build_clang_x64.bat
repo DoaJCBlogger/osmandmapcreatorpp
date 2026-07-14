@@ -2,3 +2,4 @@ del /S osmandmapcreator++.exe
 del /S *.obj
 clang-cl.exe /std:c++17 -m64 -g0 /c /EHsc /MT -O3 -ffunction-sections /Gy -Wno-everything -DSQLITE_THREADSAFE=2 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_ENABLE_RTREE -DSQLITE_ENABLE_MATH_FUNCTIONS -D_FORTIFY_SOURCE=2 -DSQLITE_ENABLE_PERCENTILE -DSQLITE_DEFAULT_MEMSTATUS=0 -DSQLITE_LIKE_DOESNT_MATCH_BLOBS -DSQLITE_OMIT_DECLTYPE -DSQLITE_OMIT_PROGRESS_CALLBACK -DSQLITE_OMIT_SHARED_CACHE sqlite/sqlite3.c OBF.pb.cc main.cpp -I. -Isqlite
 link.exe /RELEASE /LTCG /INCREMENTAL:NO /NOLOGO -subsystem:console,5.02 /MACHINE:X64 /OPT:REF /OPT:ICF kernel32.lib ws2_32.lib mswsock.lib advapi32.lib user32.lib gdi32.lib comdlg32.lib winspool.lib -out:osmandmapcreator++.exe sqlite3.obj OBF.pb.obj main.obj shell32.lib comctl32.lib libprotobuf.lib winmm.lib wldap32.lib crypt32.lib
+mt.exe -nologo -manifest "osmandmapcreator++.exe.manifest" -outputresource:"osmandmapcreator++.exe;#1"

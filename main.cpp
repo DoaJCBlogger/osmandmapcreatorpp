@@ -222,6 +222,7 @@ static unsigned char *progressBitmapPtr = nullptr;
 static bool shouldShowGUI = true;
 static unsigned int guiSelectedQuadtreeSplit = 0;
 static unsigned int guiSelectedSplitWithinQuadtree = 0;
+uint32_t pid = 0;
 
 #define ID_STARTBTN 1
 #define ID_INPUT_FILENAME_FIELD 2
@@ -262,7 +263,8 @@ bool foundInputFilenameArgument = false;
 bool foundOutputFilenameArgument = false;
 
 int main(int argc, char** argv) {
-	cout << "OsmAndMapCreator++ v0.1.9" << endl;
+	cout << "OsmAndMapCreator++ v0.1.10" << endl;
+	pid = GetCurrentProcessId();
 
 	//If there is only 1 argument that is not the help option then assume that it's the input filename
 	if (argc == 2) {
@@ -473,12 +475,12 @@ void createOBFFile(void *param) {
 	uint64_t mapIndexSize = 0;
 
 	writeMapIndex(inputFilePath.stem().string());
-	mapIndexSize = getFileSize(utf8_to_wstring("mapIndex").c_str());
+	mapIndexSize = getFileSize(utf8_to_wstring("mapIndex_" + to_string(pid)).c_str());
 	currentDiskUsage += mapIndexSize;
 	//cout << endl << "mapIndex temp file size: " << mapIndexSize;
 	writeOBFVarint32or64BE(cos, mapIndexSize);
-	copyRawFileIntoCodedOutputStream(cos, "mapIndex", mapIndexSize);
-	if (!shouldKeepTempFiles) remove("mapIndex");
+	copyRawFileIntoCodedOutputStream(cos, "mapIndex_" + to_string(pid), mapIndexSize);
+	if (!shouldKeepTempFiles) remove(string("mapIndex_" + to_string(pid)).c_str());
 	currentDiskUsage = -mapIndexSize;
 
 	//Version 2
@@ -742,7 +744,7 @@ bool CALLBACK SetFont(HWND child, LPARAM font) {
 }
 
 void printHelp() {
-	cout << "OsmAndMapCreator++ version 0.1.9";
+	cout << "OsmAndMapCreator++ version 0.1.10";
 	cout << endl << endl << "This utility generates OBF map files for OsmAnd from an OpenStreetMap SQLite database";
 	cout << endl << endl << "Usage:";
 	cout << endl << "\t-i [path]\t\t\t\tInput filename (required)";
@@ -757,7 +759,7 @@ void printHelp() {
 
 uint64_t writeMapIndex(string name) {
 	//Create a temp file for the MapIndex
-	ofstream mapIndexTemp("mapIndex", ios::binary);
+	ofstream mapIndexTemp("mapIndex_" + to_string(pid), ios::binary);
 	google::protobuf::io::OstreamOutputStream mapIndexTempOstream(&mapIndexTemp);
 	google::protobuf::io::CodedOutputStream mapIndexCos(&mapIndexTempOstream);
 
@@ -796,11 +798,11 @@ uint64_t writeMapIndex(string name) {
 	} else if (forceSplitMode == 2 /* 3-level quadtree */) {
 		writeOsmAndStructure_mapIndex_detailed_level_4_4_4_pow2_split(powerOf2Split, false /* detailed zoom */);
 	}
-	int64_t mapRootLevelSize = getFileSize(L"mapRootLevel");
+	int64_t mapRootLevelSize = getFileSize(utf8_to_wstring("mapRootLevel_" + to_string(pid)).c_str());
 	writeOBFVarint32or64BE(mapIndexCos, mapRootLevelSize);
 	//cout << endl << "mapRootLevel size = " << mapRootLevelSize;
-	copyRawFileIntoCodedOutputStream(mapIndexCos, "mapRootLevel", mapRootLevelSize);
-	if (!shouldKeepTempFiles) remove("mapRootLevel");
+	copyRawFileIntoCodedOutputStream(mapIndexCos, "mapRootLevel_" + to_string(pid), mapRootLevelSize);
+	if (!shouldKeepTempFiles) remove(string("mapRootLevel_" + to_string(pid)).c_str());
 	
 	mapIndexCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::kLevelsFieldNumber << 3) | 6);
 	if (powerOf2Split >= 4) {
@@ -816,11 +818,11 @@ uint64_t writeMapIndex(string name) {
 	} else if (forceSplitMode == 2 /* 3-level quadtree */) {
 		writeOsmAndStructure_mapIndex_detailed_level_4_4_4_pow2_split(powerOf2Split, true /* detailed zoom */);
 	}
-	mapRootLevelSize = getFileSize(L"mapRootLevel");
+	mapRootLevelSize = getFileSize(utf8_to_wstring("mapRootLevel_" + to_string(pid)).c_str());
 	writeOBFVarint32or64BE(mapIndexCos, mapRootLevelSize);
 	//cout << endl << "mapRootLevel size = " << mapRootLevelSize;
-	copyRawFileIntoCodedOutputStream(mapIndexCos, "mapRootLevel", mapRootLevelSize);
-	if (!shouldKeepTempFiles) remove("mapRootLevel");
+	copyRawFileIntoCodedOutputStream(mapIndexCos, "mapRootLevel_" + to_string(pid), mapRootLevelSize);
+	if (!shouldKeepTempFiles) remove(string("mapRootLevel_" + to_string(pid)).c_str());
 	return 0;
 }
 
@@ -896,8 +898,8 @@ void writeOsmAndStructure_mapIndex_rules(google::protobuf::io::CodedOutputStream
 
 //OsmAndMapIndex.MapRootLevel
 void writeOsmAndStructure_mapIndex_detailed_level_1x1(unsigned char *coordinatesByteArrayPtrWithinThread, unsigned char *typesByteArrayPtrWithinThread, unsigned char *additionalTypesByteArrayPtrWithinThread, unsigned char *stringNamesByteArrayPtrWithinThread) {
-	remove("mapRootLevel");
-	ofstream mapRootLevelTemp("mapRootLevel", ios::binary);
+	remove(string("mapRootLevel_" + to_string(pid)).c_str());
+	ofstream mapRootLevelTemp("mapRootLevel_" + to_string(pid), ios::binary);
 	google::protobuf::io::OstreamOutputStream mapRootLevelTempOstream(&mapRootLevelTemp);
 	google::protobuf::io::CodedOutputStream mapRootLevelTempCos(&mapRootLevelTempOstream);
 
@@ -948,17 +950,17 @@ void writeOsmAndStructure_mapIndex_detailed_level_1x1(unsigned char *coordinates
 
 	//MapRootLevel.blocks
 	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kBlocksFieldNumber << 3) | 2);
-	writeOsmAndStructure_mapIndex_levels_block("mapDataBlock", &overallBoundingRectangle, 0, db, res, 0, coordinatesByteArrayPtrWithinThread, typesByteArrayPtrWithinThread, additionalTypesByteArrayPtrWithinThread, stringNamesByteArrayPtrWithinThread, false);
-	uint64_t mapDataBlockSize = getFileSize(L"mapDataBlock");
+	writeOsmAndStructure_mapIndex_levels_block("mapDataBlock_" + to_string(pid), &overallBoundingRectangle, 0, db, res, 0, coordinatesByteArrayPtrWithinThread, typesByteArrayPtrWithinThread, additionalTypesByteArrayPtrWithinThread, stringNamesByteArrayPtrWithinThread, false);
+	uint64_t mapDataBlockSize = getFileSize(utf8_to_wstring("mapDataBlock_" + to_string(pid)).c_str());
 	mapRootLevelTempCos.WriteVarint32(mapDataBlockSize);
-	copyRawFileIntoCodedOutputStream(mapRootLevelTempCos, "mapDataBlock", mapDataBlockSize);
-	if (!shouldKeepTempFiles) remove("mapDataBlock");
+	copyRawFileIntoCodedOutputStream(mapRootLevelTempCos, "mapDataBlock_" + to_string(pid), mapDataBlockSize);
+	if (!shouldKeepTempFiles) remove(string("mapDataBlock_" + to_string(pid)).c_str());
 }
 
 //OsmAndMapIndex.MapRootLevel
 void writeOsmAndStructure_mapIndex_detailed_level_single_power_of_2_split(int pow2, bool mediumZoom) {
-	remove("mapRootLevel");
-	ofstream mapRootLevelTemp("mapRootLevel", ios::binary);
+	remove(string("mapRootLevel_" + to_string(pid)).c_str());
+	ofstream mapRootLevelTemp("mapRootLevel_" + to_string(pid), ios::binary);
 	google::protobuf::io::OstreamOutputStream mapRootLevelTempOstream(&mapRootLevelTemp);
 	google::protobuf::io::CodedOutputStream mapRootLevelTempCos(&mapRootLevelTempOstream);
 
@@ -1164,16 +1166,16 @@ void writeOsmAndStructure_mapIndex_detailed_level_single_power_of_2_split(int po
 	for (int i = 0; i < totalBoxCount; i++) {
 		mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kBlocksFieldNumber << 3) | 2);
 		mapRootLevelTempCos.WriteVarint32(mapDataBlockSizes[i]);
-		copyRawFileIntoCodedOutputStream(mapRootLevelTempCos, "mapDataBlock" + to_string(i) + ".tmp", mapDataBlockSizes[i]);
-		if (!shouldKeepTempFiles) remove(string("mapDataBlock" + to_string(i) + ".tmp").c_str());
+		copyRawFileIntoCodedOutputStream(mapRootLevelTempCos, "mapDataBlock_" + to_string(pid) + to_string(i) + ".tmp", mapDataBlockSizes[i]);
+		if (!shouldKeepTempFiles) remove(string("mapDataBlock_" + to_string(pid) + to_string(i) + ".tmp").c_str());
 	}
 }
 
 //OsmAndMapIndex.MapRootLevel
 //This mode splits the map into a 2-level quadtree and uses a power-of-2 split in all 16 sections
 void writeOsmAndStructure_mapIndex_detailed_level_4_4_pow2_split(int pow2, bool mediumZoom) {
-	remove("mapRootLevel");
-	ofstream mapRootLevelTemp("mapRootLevel", ios::binary);
+	remove(string("mapRootLevel_" + to_string(pid)).c_str());
+	ofstream mapRootLevelTemp("mapRootLevel_" + to_string(pid), ios::binary);
 	google::protobuf::io::OstreamOutputStream mapRootLevelTempOstream(&mapRootLevelTemp);
 	google::protobuf::io::CodedOutputStream mapRootLevelTempCos(&mapRootLevelTempOstream);
 
@@ -1562,10 +1564,10 @@ void writeOsmAndStructure_mapIndex_detailed_level_4_4_pow2_split(int pow2, bool 
 	//Write the MapDataBlocks
 	//We should delete the temp files as we copy them to save space
 	{
-		ifstream thread1TempFile("thread0.tmp", ios::binary);
-		ifstream thread2TempFile("thread1.tmp", ios::binary);
-		ifstream thread3TempFile("thread2.tmp", ios::binary);
-		ifstream thread4TempFile("thread3.tmp", ios::binary);
+		ifstream thread1TempFile("thread0_" + to_string(pid) + ".tmp", ios::binary);
+		ifstream thread2TempFile("thread1_" + to_string(pid) + ".tmp", ios::binary);
+		ifstream thread3TempFile("thread2_" + to_string(pid) + ".tmp", ios::binary);
+		ifstream thread4TempFile("thread3_" + to_string(pid) + ".tmp", ios::binary);
 		uint32_t mapDataBlockSize;
 		for (int i = 0; i < totalBoxCount / 4; i++) {
 			mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kBlocksFieldNumber << 3) | 2);
@@ -1594,18 +1596,18 @@ void writeOsmAndStructure_mapIndex_detailed_level_4_4_pow2_split(int pow2, bool 
 		}
 	}
 	if (!shouldKeepTempFiles) {
-		remove("thread0.tmp");
-		remove("thread1.tmp");
-		remove("thread2.tmp");
-		remove("thread3.tmp");
+		remove(string("thread0_" + to_string(pid) + ".tmp").c_str());
+		remove(string("thread1_" + to_string(pid) + ".tmp").c_str());
+		remove(string("thread2_" + to_string(pid) + ".tmp").c_str());
+		remove(string("thread3_" + to_string(pid) + ".tmp").c_str());
 	}
 }
 
 //OsmAndMapIndex.MapRootLevel
 //This mode splits the map into a 3-level quadtree and uses a power-of-2 split in all 64 sections
 void writeOsmAndStructure_mapIndex_detailed_level_4_4_4_pow2_split(int pow2, bool mediumZoom) {
-	remove("mapRootLevel");
-	ofstream mapRootLevelTemp("mapRootLevel", ios::binary);
+	remove(string("mapRootLevel_" + to_string(pid)).c_str());
+	ofstream mapRootLevelTemp("mapRootLevel_" + to_string(pid), ios::binary);
 	google::protobuf::io::OstreamOutputStream mapRootLevelTempOstream(&mapRootLevelTemp);
 	google::protobuf::io::CodedOutputStream mapRootLevelTempCos(&mapRootLevelTempOstream);
 
@@ -2051,10 +2053,10 @@ void writeOsmAndStructure_mapIndex_detailed_level_4_4_4_pow2_split(int pow2, boo
 	//Write the MapDataBlocks
 	//We should delete the temp files as we copy them to save space
 	{
-		ifstream thread1TempFile("thread0.tmp", ios::binary);
-		ifstream thread2TempFile("thread1.tmp", ios::binary);
-		ifstream thread3TempFile("thread2.tmp", ios::binary);
-		ifstream thread4TempFile("thread3.tmp", ios::binary);
+		ifstream thread1TempFile("thread0_" + to_string(pid) + ".tmp", ios::binary);
+		ifstream thread2TempFile("thread1_" + to_string(pid) + ".tmp", ios::binary);
+		ifstream thread3TempFile("thread2_" + to_string(pid) + ".tmp", ios::binary);
+		ifstream thread4TempFile("thread3_" + to_string(pid) + ".tmp", ios::binary);
 		uint32_t mapDataBlockSize;
 		for (int i = 0; i < totalBoxCount / 4; i++) {
 			mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kBlocksFieldNumber << 3) | 2);
@@ -2083,10 +2085,10 @@ void writeOsmAndStructure_mapIndex_detailed_level_4_4_4_pow2_split(int pow2, boo
 		}
 	}
 	if (!shouldKeepTempFiles) {
-		remove("thread0.tmp");
-		remove("thread1.tmp");
-		remove("thread2.tmp");
-		remove("thread3.tmp");
+		remove(string("thread0_" + to_string(pid) + ".tmp").c_str());
+		remove(string("thread1_" + to_string(pid) + ".tmp").c_str());
+		remove(string("thread2_" + to_string(pid) + ".tmp").c_str());
+		remove(string("thread3_" + to_string(pid) + ".tmp").c_str());
 	}
 }
 
@@ -2094,7 +2096,7 @@ void writeOsmAndStructure_mapIndex_levels_block_SingleSplitThreadWorker(void *pa
 	MapDataBlockThreadInfo *ptr = (MapDataBlockThreadInfo*)param;
 	uint64_t *mapDataBlockSizes = ptr->mapDataBlockSizes;
 	//It's better to save the MapDataBlocks to a larger temp file per-thread than separate ones because the "Size on disk" can be huge for a lot of small files
-	ofstream threadTempFile(string("thread" + to_string(ptr->threadID) + ".tmp"), ios::binary);
+	ofstream threadTempFile(string("thread" + to_string(ptr->threadID) + "_" + to_string(pid) + ".tmp"), ios::binary);
 	google::protobuf::io::OstreamOutputStream threadTempOstream(&threadTempFile);
 	google::protobuf::io::CodedOutputStream threadBlockCos(&threadTempOstream);
 	uint32_t fileSizeBE = 0;
@@ -2102,15 +2104,15 @@ void writeOsmAndStructure_mapIndex_levels_block_SingleSplitThreadWorker(void *pa
 		int blockIdx = (i * 4) + ptr->threadID;
 		if (blockIdx >= ptr->rectanglesCount) break;
 		PostMessage(hwndMainWin, WM_USER_REDRAW, NULL, NULL);
-		writeOsmAndStructure_mapIndex_levels_block(string("mapDataBlock" + to_string(blockIdx) + ".tmp"), &ptr->rectangles[blockIdx], blockIdx, ptr->dbConnection, ptr->stmt, ptr->threadID, ptr->coordinatesByteArrayPtrWithinThread, ptr->typesByteArrayPtrWithinThread, ptr->additionalTypesByteArrayPtrWithinThread, ptr->stringNamesByteArrayPtrWithinThread, ptr->mediumZoom);
+		writeOsmAndStructure_mapIndex_levels_block(string("mapDataBlock" + to_string(blockIdx) + "_" + to_string(pid) + ".tmp"), &ptr->rectangles[blockIdx], blockIdx, ptr->dbConnection, ptr->stmt, ptr->threadID, ptr->coordinatesByteArrayPtrWithinThread, ptr->typesByteArrayPtrWithinThread, ptr->additionalTypesByteArrayPtrWithinThread, ptr->stringNamesByteArrayPtrWithinThread, ptr->mediumZoom);
 		progressCompletedRectangles.fetch_add(1, memory_order_relaxed);
 		PostMessage(hwndMainWin, WM_USER_REDRAW, NULL, NULL);
-		mapDataBlockSizes[blockIdx] = getFileSize(utf8_to_wstring(string("mapDataBlock" + to_string(blockIdx) + ".tmp")).c_str());
+		mapDataBlockSizes[blockIdx] = getFileSize(utf8_to_wstring(string("mapDataBlock" + to_string(blockIdx) + "_" + to_string(pid) + ".tmp")).c_str());
 		fileSizeBE = mapDataBlockSizes[blockIdx];
 		fileSizeBE = swap_endian(fileSizeBE);
 		threadBlockCos.WriteRaw(&fileSizeBE, 4);
-		copyRawFileIntoCodedOutputStream(threadBlockCos, "mapDataBlock" + to_string(blockIdx) + ".tmp", mapDataBlockSizes[blockIdx]);
-		if (!shouldKeepTempFiles) remove(string("mapDataBlock" + to_string(blockIdx) + ".tmp").c_str());
+		copyRawFileIntoCodedOutputStream(threadBlockCos, "mapDataBlock" + to_string(blockIdx) + "_" + to_string(pid) + ".tmp", mapDataBlockSizes[blockIdx]);
+		if (!shouldKeepTempFiles) remove(string("mapDataBlock" + to_string(blockIdx) + "_" + to_string(pid) + ".tmp").c_str());
 	}
 }
 

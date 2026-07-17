@@ -80,7 +80,7 @@ static const string TAG_KEYS_HUMAN_READABLE_WHITELIST = "'name', 'name_1', 'name
 static const string KEY_BLACKLIST = "key NOT LIKE 'tiger%' AND key NOT LIKE 'source%' AND key NOT LIKE 'attribution%' AND key NOT LIKE 'nhd%' AND key NOT LIKE 'power%' AND key NOT LIKE 'created_by%' AND key NOT LIKE 'seamark%' AND key NOT LIKE 'gnis%' AND key NOT LIKE 'fid%' AND key NOT LIKE 'fixme%' AND key NOT LIKE 'roof%' AND key NOT LIKE 'ncos%' AND key NOT LIKE 'was:%' AND key NOT LIKE 'old_name%'";
 static unordered_map<string, uint32_t> keyMap;
 
-uint32_t getSInt32FromInt32(int32_t i) {
+static inline uint32_t getSInt32FromInt32(int32_t i) {
 	return (abs(i) << 1) | (i < 0 ? 1 : 0);
 }
 
@@ -128,10 +128,10 @@ public:
 	}
 
 	void calculateInt32ValuesFromDouble() {
-		this->leftInt32 = longitudeToInt32(this->left, 21);
-		this->rightInt32 = longitudeToInt32(this->right, 21);
-		this->topInt32 = latitudeToInt32(this->top, 21);
-		this->bottomInt32 = latitudeToInt32(this->bottom, 21);
+		this->leftInt32 = longitudeToInt32(this->left, 21) & 0xffffffe0;
+		this->rightInt32 = longitudeToInt32(this->right, 21) & 0xffffffe0;
+		this->topInt32 = latitudeToInt32(this->top, 21) & 0xffffffe0;
+		this->bottomInt32 = latitudeToInt32(this->bottom, 21) & 0xffffffe0;
 		this->width = this->right - this->left;
 		this->height = this->top - this->bottom;
 		this->widthInt32 = this->rightInt32 - this->leftInt32;
@@ -152,7 +152,7 @@ public:
 		this->calculateDoubleValuesFromInt32();
 	}
 	
-	void expandByAbsoluteValue(uint64_t n) {
+	void expandByAbsoluteValue(int64_t n) {
 		this->leftInt32 -= n;
 		if (this->leftInt32 & 0x1f >= 16) this->leftInt32 -= 32;
 		this->leftInt32 &= 0xffffffe0;
@@ -1620,19 +1620,6 @@ void writeOsmAndStructure_mapIndex_detailed_level_4_4_4_pow2_split(int pow2, boo
 	}
 	cout << endl << "Using " << (forceSplitMode >= 0 ? "user-defined" : "automatic") << " 4:4:4:" << splitSectionCount << "x" << splitSectionCount << " split (" << totalBoxCount << " data boxes)";
 
-	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kMaxZoomFieldNumber << 3));
-	mapRootLevelTempCos.WriteVarint32(mediumZoom ? 14 : 26);
-	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kMinZoomFieldNumber << 3));
-	mapRootLevelTempCos.WriteVarint32(mediumZoom ? 5 : 15);
-	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kLeftFieldNumber << 3));
-	mapRootLevelTempCos.WriteVarint32(overallBoundingRectangle.leftInt32);
-	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kRightFieldNumber << 3));
-	mapRootLevelTempCos.WriteVarint32(overallBoundingRectangle.rightInt32);
-	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kTopFieldNumber << 3));
-	mapRootLevelTempCos.WriteVarint32(overallBoundingRectangle.topInt32);
-	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kBottomFieldNumber << 3));
-	mapRootLevelTempCos.WriteVarint32(overallBoundingRectangle.bottomInt32);
-
 	uint64_t singleBoxWidth, singleBoxHeight;
 	singleBoxWidth = (overallBoundingRectangle.widthInt32 >> pow2) >> 3;
 	singleBoxHeight = (overallBoundingRectangle.heightInt32 >> pow2) >> 3;
@@ -1688,7 +1675,7 @@ void writeOsmAndStructure_mapIndex_detailed_level_4_4_4_pow2_split(int pow2, boo
 									rectangles[(((((((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + ((quadtreeLevel2Y * 2) + quadtreeLevel2X)) * 4) + ((quadtreeLevel3Y * 2) + quadtreeLevel3X)) * (splitSectionCount * splitSectionCount)) + ((j * splitSectionCount) + i)].topInt32 = (quadtreeLevel3Rectangles[(((((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + ((quadtreeLevel2Y * 2) + quadtreeLevel2X)) * 4) + ((quadtreeLevel3Y * 2) + quadtreeLevel3X)].topInt32 + (j * singleBoxHeight));
 									rectangles[(((((((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + ((quadtreeLevel2Y * 2) + quadtreeLevel2X)) * 4) + ((quadtreeLevel3Y * 2) + quadtreeLevel3X)) * (splitSectionCount * splitSectionCount)) + ((j * splitSectionCount) + i)].bottomInt32 = (rectangles[(((((((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + ((quadtreeLevel2Y * 2) + quadtreeLevel2X)) * 4) + ((quadtreeLevel3Y * 2) + quadtreeLevel3X)) * (splitSectionCount * splitSectionCount)) + ((j * splitSectionCount) + i)].topInt32 + singleBoxHeight);
 									rectangles[(((((((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + ((quadtreeLevel2Y * 2) + quadtreeLevel2X)) * 4) + ((quadtreeLevel3Y * 2) + quadtreeLevel3X)) * (splitSectionCount * splitSectionCount)) + ((j * splitSectionCount) + i)].calculateDoubleValuesFromInt32();
-									rectangles[(((((((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + ((quadtreeLevel2Y * 2) + quadtreeLevel2X)) * 4) + ((quadtreeLevel3Y * 2) + quadtreeLevel3X)) * (splitSectionCount * splitSectionCount)) + ((j * splitSectionCount) + i)].expandByAbsoluteValue(2000);
+									rectangles[(((((((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + ((quadtreeLevel2Y * 2) + quadtreeLevel2X)) * 4) + ((quadtreeLevel3Y * 2) + quadtreeLevel3X)) * (splitSectionCount * splitSectionCount)) + ((j * splitSectionCount) + i)].expandByAbsoluteValue(8000);
 									rectangles[(((((((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + ((quadtreeLevel2Y * 2) + quadtreeLevel2X)) * 4) + ((quadtreeLevel3Y * 2) + quadtreeLevel3X)) * (splitSectionCount * splitSectionCount)) + ((j * splitSectionCount) + i)].calculateMapDataBoxBytesSizeWithoutTagAndFixed32Size(&(quadtreeLevel3Rectangles[(((((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + ((quadtreeLevel2Y * 2) + quadtreeLevel2X)) * 4) + ((quadtreeLevel3Y * 2) + quadtreeLevel3X)]));
 									//cout << endl << "\t\t\tRectangle " << ((((((((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + ((quadtreeLevel2Y * 2) + quadtreeLevel2X)) * 4) + ((quadtreeLevel3Y * 2) + quadtreeLevel3X)) * (splitSectionCount * splitSectionCount)) + ((j * splitSectionCount) + i));
 								}
@@ -1892,7 +1879,18 @@ void writeOsmAndStructure_mapIndex_detailed_level_4_4_4_pow2_split(int pow2, boo
 		boxSize += 1 + 4 + rectangles[i].MapDataBoxBytesSizeWithoutTagAndFixed32Size;
 		if (!quiet && i < totalBoxCount - 1) cout << ", ";
 	}*/
-
+	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kMaxZoomFieldNumber << 3));
+	mapRootLevelTempCos.WriteVarint32(mediumZoom ? 14 : 26);
+	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kMinZoomFieldNumber << 3));
+	mapRootLevelTempCos.WriteVarint32(mediumZoom ? 5 : 15);
+	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kLeftFieldNumber << 3));
+	mapRootLevelTempCos.WriteVarint32(overallBoundingRectangle.leftInt32);
+	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kRightFieldNumber << 3));
+	mapRootLevelTempCos.WriteVarint32(overallBoundingRectangle.rightInt32);
+	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kTopFieldNumber << 3));
+	mapRootLevelTempCos.WriteVarint32(overallBoundingRectangle.topInt32);
+	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kBottomFieldNumber << 3));
+	mapRootLevelTempCos.WriteVarint32(overallBoundingRectangle.bottomInt32);
 	//Root box
 	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kBoxesFieldNumber << 3) | 6);
 	//cout << endl << "Root box size: " << boxSize;
@@ -2210,6 +2208,28 @@ void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRec
 		sqlite3_finalize(stmt);
 		stmt = nullptr;
 		if (!quiet) cout << endl << "Median unique ID: " << medianUniqueID;
+		//Query to get actual bounding box that includes ways with the first node within the original bounding box
+		/*rc = sqlite3_prepare_v2(dbConnection, "select min(q3.min_lon) as actual_left, max(q3.max_lon) as actual_right, min(q3.min_lat) as actual_bottom, max(q3.max_lat) as actual_top from way_nodes q1 inner join rtree_node q2 on q2.node_id=q1.node_id inner join rtree_way q3 on q3.way_id=q1.way_id where q1.node_order=1 and (q2.max_lat >= :bottom and q2.min_lat <= :top) and (q2.max_lon >= :left and q2.min_lon <= :right);", -1, &stmt, 0);
+		sqlite3_bind_double(stmt, sqlite3_bind_parameter_index(stmt, ":left"), rectangle->left);
+		sqlite3_bind_double(stmt, sqlite3_bind_parameter_index(stmt, ":right"), rectangle->right);
+		sqlite3_bind_double(stmt, sqlite3_bind_parameter_index(stmt, ":bottom"), rectangle->bottom);
+		sqlite3_bind_double(stmt, sqlite3_bind_parameter_index(stmt, ":top"), rectangle->top);
+		if (rc != SQLITE_OK) {
+			cout << endl << "Error while getting the actual bounding box";
+		}
+		sqlite3_step(stmt);
+		oldLeft = rectangle->left;
+		oldRight = rectangle->right;
+		oldBottom = rectangle->bottom;
+		oldTop = rectangle->top;
+		if (sqlite3_column_double(stmt, 0) < rectangle->left) rectangle->left = sqlite3_column_double(stmt, 0);
+		if (sqlite3_column_double(stmt, 1) > rectangle->right) rectangle->right = sqlite3_column_double(stmt, 1);
+		if (sqlite3_column_double(stmt, 2) < rectangle->bottom) rectangle->bottom = sqlite3_column_double(stmt, 2);
+		if (sqlite3_column_double(stmt, 3) > rectangle->top) rectangle->top = sqlite3_column_double(stmt, 3);
+		rectangle->calculateInt32ValuesFromDouble();
+		//rectangle->expandByAbsoluteValue(8000);
+		sqlite3_finalize(stmt);
+		stmt = nullptr;*/
 	}
 	
 	//MapDataBlock.baseId
@@ -2312,17 +2332,37 @@ void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRec
 					firstNodeID = node_id;
 
 					//The delta is based on the top-left point of the bounding box
-					deltaLat = lat - rectangle->topInt32;
+					deltaLat = (((lat - rectangle->topInt32) >> 5) << 5);
+					if (deltaLat < 0) {
+						if (((lat - rectangle->topInt32) & 0x1f) > 17) deltaLat -= 32;
+					} else if (deltaLat > 0) {
+						if (((lat - rectangle->topInt32) & 0x1f) > 17) deltaLat += 32;
+					}
 					prevLatInt32 = rectangle->topInt32 + deltaLat;
-					deltaLon = lon - rectangle->leftInt32;
+					deltaLon = (((lon - rectangle->leftInt32) >> 5) << 5);
+					if (deltaLon < 0) {
+						if (((lon - rectangle->leftInt32) & 0x1f) > 17) deltaLon -= 32;
+					} else if (deltaLon > 0) {
+						if (((lon - rectangle->leftInt32) & 0x1f) > 17) deltaLon += 32;
+					}
 					prevLonInt32 = rectangle->leftInt32 + deltaLon;
 				} else {
 					//The delta is based on the previous node
 					//Keep track of all the previous deltas by adding the rounded ones so we can base the current one on that instead of the accurate values
 					deltaLat = lat - prevLatInt32;
-					prevLatInt32 += deltaLat;
+					if (deltaLat < 0) {
+						if (((lat - prevLatInt32) & 0x1f) > 16) deltaLat -= 32;
+					} else if (deltaLat > 0) {
+						if (((lat - prevLatInt32) & 0x1f) > 16) deltaLat += 32;
+					}
+					prevLatInt32 += ((deltaLat >> 5) << 5);
 					deltaLon = lon - prevLonInt32;
-					prevLonInt32 += deltaLon;
+					if (deltaLon < 0) {
+						if (((lon - prevLonInt32) & 0x1f) > 16) deltaLon -= 32;
+					} else if (deltaLon > 0) {
+						if (((lon - prevLonInt32) & 0x1f) > 16) deltaLon += 32;
+					}
+					prevLonInt32 += ((deltaLon >> 5) << 5);
 				}
 				//cout << endl << "way deltaLat=" << deltaLat << " (lower 5 bits=" << (deltaLat & 0x1f) << "), deltaLon=" << deltaLon << " (lower 5 bits=" << (deltaLon & 0x1f) << ")" << endl;
 				//If this is the last node in the way, see if adding or subtracting 32 makes the end node coordinates more accurate
@@ -2362,11 +2402,11 @@ void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRec
 				deltaLon >>= 5;
 				uint64_t sint32;
 				//X (longitude)
-				sint32 = (abs(deltaLon) << 1) | (deltaLon < 0 ? 1 : 0);
-				coordinatesByteArrayPtr = google::protobuf::io::CodedOutputStream::WriteVarint32ToArray(sint32, coordinatesByteArrayPtr);
+				//sint32 = (abs(deltaLon) << 1) | (deltaLon < 0 ? 1 : 0);
+				coordinatesByteArrayPtr = google::protobuf::io::CodedOutputStream::WriteVarint32ToArray(getSInt32FromInt32(deltaLon), coordinatesByteArrayPtr);
 				//Y (latitude)
-				sint32 = (abs(deltaLat) << 1) | (deltaLat < 0 ? 1 : 0);
-				coordinatesByteArrayPtr = google::protobuf::io::CodedOutputStream::WriteVarint32ToArray(sint32, coordinatesByteArrayPtr);
+				//sint32 = (abs(deltaLat) << 1) | (deltaLat < 0 ? 1 : 0);
+				coordinatesByteArrayPtr = google::protobuf::io::CodedOutputStream::WriteVarint32ToArray(getSInt32FromInt32(deltaLat), coordinatesByteArrayPtr);
 				//coordinatesCount++;
 			}
 			nodeIDVector.clear();
@@ -2768,29 +2808,29 @@ double int32ToLongitude(uint64_t in, uint32_t zoom) {
 //Round the latitude and longitude int32 values to a multiple of 32 since the lower 5 bits are usually dropped anyway and preserving them introduces rounding errors
 static inline int32_t latitudeToInt32(double latitude, uint32_t zoom) {
 	int32_t retVal = ((int32_t)(((((asinh(tan((latitude * PI) / 180) / (latitude < 0 ? -1.0 : 1.0)) / PI) - 1) * (1 << zoom)) / -2) * 1024));
-	unsigned int remainder = retVal & 0x1f;
+	//unsigned int remainder = retVal & 0x1f;
 	/*if (remainder < 8) {
 		retVal -= 32;
 	} else if (remainder > 24) {
 		retVal += 32;
 	}*/
-	if (remainder >= 16) {
+	/*if (remainder >= 16) {
 		retVal += 32;
-	}
+	}*/
 	return retVal & 0xffffffe0;
 }
 
 static inline int32_t longitudeToInt32(double longitude, uint32_t zoom) {
 	int32_t retVal = ((int32_t)(((longitude + 180.0) / 360.0) * (1 << zoom) * 1024.0));
-	unsigned int remainder = retVal & 0x1f;
+	//unsigned int remainder = retVal & 0x1f;
 	/*if (remainder < 8) {
 		retVal -= 32;
 	} else if (remainder > 24) {
 		retVal += 32;
 	}*/
-	if (remainder >= 16) {
-		retVal -= 32;
-	}
+	/*if (remainder >= 16) {
+		retVal += 32;
+	}*/
 	return retVal & 0xffffffe0;
 }
 

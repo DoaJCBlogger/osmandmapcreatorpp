@@ -39,8 +39,8 @@ uint64_t writeMapIndex(string name);
 void writeOsmAndStructure_mapIndex_rules(google::protobuf::io::CodedOutputStream &cos);
 void writeMapEncodingRule(string tag, string value, uint32_t minZoom);
 uint64_t GetSystemTimeAsUnixTime();
-static inline int32_t latitudeToInt32(double latitude, uint32_t zoom);
-static inline int32_t longitudeToInt32(double longitude, uint32_t zoom);
+static inline int32_t latitudeToInt32(double latitude, uint32_t zoom, bool fullAccuracy = false);
+static inline int32_t longitudeToInt32(double longitude, uint32_t zoom, bool fullAccuracy = false);
 void writeOsmAndStructure_mapIndex_detailed_level_1x1(unsigned char *coordinatesByteArrayPtrWithinThread, unsigned char *typesByteArrayPtrWithinThread, unsigned char *additionalTypesByteArrayPtrWithinThread, unsigned char *stringNamesByteArrayPtrWithinThread);
 void writeOsmAndStructure_mapIndex_detailed_level_single_power_of_2_split(int pow2, bool mediumZoom);
 void writeOsmAndStructure_mapIndex_detailed_level_4_4_pow2_split(int pow2, bool mediumZoom);
@@ -2285,7 +2285,7 @@ void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRec
 
 		//Ways
 		uint64_t wayIDIndex = 0;
-		uint64_t latRoundingError, lonRoundingError;
+		int64_t latRoundingError, lonRoundingError;
 		vector<uint64_t> nodeIDVector;
 		vector<uint64_t> latVector;
 		vector<uint64_t> lonVector;
@@ -2293,6 +2293,8 @@ void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRec
 		latVector.reserve(2048);
 		lonVector.reserve(2048);
 		for (uint64_t wayID : wayIDs) {
+			lonRoundingError = 0;
+			latRoundingError = 0;
 			if (verbose) {
 				if (wayIDIndex == 0) cout << endl;
 				if ((wayIDs.size() < 1000 || wayIDIndex % 99 == 0)) {
@@ -2313,8 +2315,8 @@ void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRec
 			while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
 				way_id = sqlite3_column_int64(stmt, 0);
 				nodeIDVector.emplace_back(sqlite3_column_int64(stmt, 1));
-				latVector.emplace_back(latitudeToInt32(sqlite3_column_double(stmt, 3), 21));
-				lonVector.emplace_back(longitudeToInt32(sqlite3_column_double(stmt, 4), 21));
+				latVector.emplace_back(latitudeToInt32(sqlite3_column_double(stmt, 3), 21, true));
+				lonVector.emplace_back(longitudeToInt32(sqlite3_column_double(stmt, 4), 21, true));
 
 				if (sqlite3_column_int64(stmt, 5) /* index_within_way */ == 1) {
 					nodesWithinWay = sqlite3_column_int64(stmt, 6);
@@ -2344,36 +2346,41 @@ void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRec
 
 					//The delta is based on the top-left point of the bounding box
 					deltaLat = (((lat - rectangle->topInt32) >> 5) << 5);
-					if (deltaLat < 0) {
+					/*if (deltaLat < 0) {
 						if (((lat - rectangle->topInt32) & 0x1f) > 17) deltaLat -= 32;
 					} else if (deltaLat > 0) {
 						if (((lat - rectangle->topInt32) & 0x1f) > 17) deltaLat += 32;
-					}
+					}*/
 					prevLatInt32 = rectangle->topInt32 + deltaLat;
 					deltaLon = (((lon - rectangle->leftInt32) >> 5) << 5);
-					if (deltaLon < 0) {
+					/*if (deltaLon < 0) {
 						if (((lon - rectangle->leftInt32) & 0x1f) > 17) deltaLon -= 32;
 					} else if (deltaLon > 0) {
 						if (((lon - rectangle->leftInt32) & 0x1f) > 17) deltaLon += 32;
-					}
+					}*/
 					prevLonInt32 = rectangle->leftInt32 + deltaLon;
 				} else {
 					//The delta is based on the previous node
 					//Keep track of all the previous deltas by adding the rounded ones so we can base the current one on that instead of the accurate values
-					deltaLat = lat - prevLatInt32;
-					if (deltaLat < 0) {
-						if (((lat - prevLatInt32) & 0x1f) > 16) deltaLat -= 32;
+					deltaLat = (lat - prevLatInt32);
+					/*if (deltaLat < 0) {
+						if ((abs((int64_t)(lat - prevLatInt32)) & 0x1f) > 16) deltaLat += 32;
 					} else if (deltaLat > 0) {
-						if (((lat - prevLatInt32) & 0x1f) > 16) deltaLat += 32;
-					}
-					prevLatInt32 += ((deltaLat >> 5) << 5);
-					deltaLon = lon - prevLonInt32;
-					if (deltaLon < 0) {
+						if ((abs((int64_t)(lat - prevLatInt32)) & 0x1f) > 16) deltaLat -= 32;
+					}*/
+					deltaLon = (lon - prevLonInt32);
+					/*if (deltaLon < 0) {
 						if (((lon - prevLonInt32) & 0x1f) > 16) deltaLon -= 32;
 					} else if (deltaLon > 0) {
 						if (((lon - prevLonInt32) & 0x1f) > 16) deltaLon += 32;
-					}
-					prevLonInt32 += ((deltaLon >> 5) << 5);
+					}*/
+					if (deltaLat < 0 && abs(deltaLat) >= 4) latRoundingError += 32;
+					if (deltaLon < 0 && abs(deltaLon) >= 4) lonRoundingError += 32;
+					deltaLat = ((deltaLat >> 5) << 5);
+					deltaLon = ((deltaLon >> 5) << 5);
+					
+					prevLatInt32 += deltaLat;
+					prevLonInt32 += deltaLon;
 				}
 				//cout << endl << "way deltaLat=" << deltaLat << " (lower 5 bits=" << (deltaLat & 0x1f) << "), deltaLon=" << deltaLon << " (lower 5 bits=" << (deltaLon & 0x1f) << ")" << endl;
 				//If this is the last node in the way, see if adding or subtracting 32 makes the end node coordinates more accurate
@@ -2406,6 +2413,8 @@ void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRec
 					}*/
 
 					isArea = firstNodeID == node_id;
+					deltaLat += latRoundingError;
+					deltaLon += lonRoundingError;
 				}
 				//cout << endl << "deltaX=" << ((deltaLon >> 5) << 5) << ", deltaY=" << ((deltaLat >> 5) << 5);
 				//Write the delta values as sint32
@@ -2817,7 +2826,7 @@ double int32ToLongitude(uint64_t in, uint32_t zoom) {
 }
 
 //Round the latitude and longitude int32 values to a multiple of 32 since the lower 5 bits are usually dropped anyway and preserving them introduces rounding errors
-static inline int32_t latitudeToInt32(double latitude, uint32_t zoom) {
+static inline int32_t latitudeToInt32(double latitude, uint32_t zoom, bool fullAccuracy) {
 	int32_t retVal = ((int32_t)(((((asinh(tan((latitude * PI) / 180) / (latitude < 0 ? -1.0 : 1.0)) / PI) - 1) * (1 << zoom)) / -2) * 1024));
 	//unsigned int remainder = retVal & 0x1f;
 	/*if (remainder < 8) {
@@ -2828,10 +2837,11 @@ static inline int32_t latitudeToInt32(double latitude, uint32_t zoom) {
 	/*if (remainder >= 16) {
 		retVal += 32;
 	}*/
-	return retVal & 0xffffffe0;
+	if (!fullAccuracy) retVal &= 0xffffffe0;
+	return retVal;
 }
 
-static inline int32_t longitudeToInt32(double longitude, uint32_t zoom) {
+static inline int32_t longitudeToInt32(double longitude, uint32_t zoom, bool fullAccuracy) {
 	int32_t retVal = ((int32_t)(((longitude + 180.0) / 360.0) * (1 << zoom) * 1024.0));
 	//unsigned int remainder = retVal & 0x1f;
 	/*if (remainder < 8) {
@@ -2842,7 +2852,8 @@ static inline int32_t longitudeToInt32(double longitude, uint32_t zoom) {
 	/*if (remainder >= 16) {
 		retVal += 32;
 	}*/
-	return retVal & 0xffffffe0;
+	if (!fullAccuracy) retVal &= 0xffffffe0;
+	return retVal;
 }
 
 uint32_t getVarintRequiredBytes(uint64_t i) {

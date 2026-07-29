@@ -13,7 +13,11 @@
 #include <google/protobuf/io/zero_copy_stream_impl.h>
 #include <iomanip>
 #include <unordered_set>
-#include <windows.h>
+#if defined(_WIN32)
+	#include <windows.h>
+	#include <process.h>
+	#include <commctrl.h>
+#endif
 #include <wchar.h>
 #include <codecvt>
 #include <filesystem>
@@ -22,23 +26,27 @@
 #include <string_view>
 #include <filesystem>
 #include <array>
-#include <process.h>
-#include <commctrl.h>
 #include <atomic>
 #include <iomanip>
 #include <sstream>
+#include <cmath>
+#if defined(__linux__)
+	#include <unistd.h>
+#endif
+#include <thread>
+#include <chrono>
 
 using namespace std;
 void writeOBFVarint32or64BE(google::protobuf::io::CodedOutputStream &i, uint64_t n);
 uint64_t copyRawFileIntoCodedOutputStream(google::protobuf::io::CodedOutputStream &cos, string filename, int64_t size);
 void copyRawInputStreamIntoCodedOutputStream(google::protobuf::io::CodedOutputStream &cos, istream *inputFile, int64_t size);
-__int64 getFileSize(const wchar_t* name);
+static inline int64_t getFileSize(string name);
 std::wstring utf8_to_wstring(const std::string& str);
 std::string wstring_to_utf8(const std::wstring& str);
 uint64_t writeMapIndex(string name);
 void writeOsmAndStructure_mapIndex_rules(google::protobuf::io::CodedOutputStream &cos);
 void writeMapEncodingRule(string tag, string value, uint32_t minZoom);
-uint64_t GetSystemTimeAsUnixTime();
+static inline uint64_t GetSystemTimeAsUnixTime();
 static inline int32_t latitudeToInt32(double latitude, uint32_t zoom, bool fullAccuracy = false);
 static inline int32_t longitudeToInt32(double longitude, uint32_t zoom, bool fullAccuracy = false);
 void writeOsmAndStructure_mapIndex_detailed_level_1x1(unsigned char *coordinatesByteArrayPtrWithinThread, unsigned char *typesByteArrayPtrWithinThread, unsigned char *additionalTypesByteArrayPtrWithinThread, unsigned char *stringNamesByteArrayPtrWithinThread);
@@ -51,8 +59,10 @@ uint32_t getVarintRequiredBytes(uint64_t i);
 void printHelp();
 static inline int min3(int64_t a, int64_t b, int64_t c);
 void writeOsmAndStructure_mapIndex_levels_block_SingleSplitThreadWorker(void *param);
-LRESULT CALLBACK WndProc(HWND hwndMainWin, UINT msg, WPARAM wParam, LPARAM lParam);
-bool CALLBACK SetFont(HWND child, LPARAM font);
+#if defined(_WIN32)
+	LRESULT CALLBACK WndProc(HWND hwndMainWin, UINT msg, WPARAM wParam, LPARAM lParam);
+	bool CALLBACK SetFont(HWND child, LPARAM font);
+#endif
 void VWSimplify(vector<uint64_t> *nodeIDVector, vector<uint64_t> *latVector, vector<uint64_t> *lonVector, uint64_t minAreaX2);
 string humanReadableTimeFromSeconds(unsigned int seconds);
 void createOBFFile(void *param);
@@ -154,16 +164,16 @@ public:
 	
 	void expandByAbsoluteValue(int64_t n) {
 		this->leftInt32 -= n;
-		if (this->leftInt32 & 0x1f >= 16) this->leftInt32 -= 32;
+		if ((this->leftInt32 & 0x1f) >= 16) this->leftInt32 -= 32;
 		this->leftInt32 &= 0xffffffe0;
 		this->rightInt32 += n;
-		if (this->rightInt32 & 0x1f >= 16) this->rightInt32 -= 32;
+		if ((this->rightInt32 & 0x1f) >= 16) this->rightInt32 -= 32;
 		this->rightInt32 &= 0xffffffe0;
 		this->topInt32 -= n;
-		if (this->topInt32 & 0x1f >= 16) this->topInt32 += 32;
+		if ((this->topInt32 & 0x1f) >= 16) this->topInt32 += 32;
 		this->topInt32 &= 0xffffffe0;
 		this->bottomInt32 += n;
-		if (this->bottomInt32 & 0x1f >= 16) this->bottomInt32 += 32;
+		if ((this->bottomInt32 & 0x1f) >= 16) this->bottomInt32 += 32;
 		this->bottomInt32 &= 0xffffffe0;
 		this->calculateDoubleValuesFromInt32();
 	}
@@ -213,7 +223,6 @@ static bool shouldKeepTempFiles = false;
 static int forcedSplitPowerOf2 = -1;
 static int forceSplitMode = -1; //-1 = automatic, 0 = single, 1 = 2-level quadtree, 2 = 3-level quadtree
 static bool verbose = false;
-HWND hwndMainWin;
 uint32_t screenWidth, screenHeight;
 //static unsigned int threads = 4;
 static unsigned int progressBitmapWidth, progressBitmapHeight, progressTotalRectangles;
@@ -233,20 +242,23 @@ uint32_t pid = 0;
 #define ID_BROWSE_INPUT_FILE 6
 #define ID_BROWSE_OUTPUT_FILE 7
 
-static HWND hwndStartBtn;
-static HWND hwndInputFilenameLabel;
-static HWND hwndOutputFilenameLabel;
-static HWND hwndInputFilenameField;
-static HWND hwndOutputFilenameField;
-static HWND hwndSplitLabel;
-static HWND hwndQuadtreeCombobox;
-static HWND hwndSplitCombobox;
-static HWND hwndRectangleCountLabel;
-static HWND hwndDetailedVectorMapProgressLabel;
-static HWND hwndDetailedVectorMapProgressBar;
-static HWND hwndProgressPercentLabel;
-static HWND hwndInputFilenameBrowseButton;
-static HWND hwndOutputFilenameBrowseButton;
+#if defined(_WIN32)
+	static HWND hwndMainWin;
+	static HWND hwndStartBtn;
+	static HWND hwndInputFilenameLabel;
+	static HWND hwndOutputFilenameLabel;
+	static HWND hwndInputFilenameField;
+	static HWND hwndOutputFilenameField;
+	static HWND hwndSplitLabel;
+	static HWND hwndQuadtreeCombobox;
+	static HWND hwndSplitCombobox;
+	static HWND hwndRectangleCountLabel;
+	static HWND hwndDetailedVectorMapProgressLabel;
+	static HWND hwndDetailedVectorMapProgressBar;
+	static HWND hwndProgressPercentLabel;
+	static HWND hwndInputFilenameBrowseButton;
+	static HWND hwndOutputFilenameBrowseButton;
+#endif
 
 struct SQLite3StatementDeleter {
 	void operator()(sqlite3_stmt* stmt) const {
@@ -264,7 +276,11 @@ bool foundOutputFilenameArgument = false;
 
 int main(int argc, char** argv) {
 	cout << "OsmAndMapCreator++ v0.1.10" << endl;
-	pid = GetCurrentProcessId();
+	#if defined(_WIN32)
+		pid = GetCurrentProcessId();
+	#elif defined(__linux__)
+		pid = getpid();
+	#endif
 
 	//If there is only 1 argument that is not the help option then assume that it's the input filename
 	if (argc == 2) {
@@ -277,6 +293,9 @@ int main(int argc, char** argv) {
 		} else {
 			string_view arg_view(argv[1]);
 			printHelp();
+			#if defined(__linux__)
+				cout << endl;
+			#endif
 			return 0;
 		}
 	} else if (argc > 2) {
@@ -331,73 +350,84 @@ int main(int argc, char** argv) {
 	}
 	
 	if (shouldShowGUI) {
-		INITCOMMONCONTROLSEX iccx;
-		iccx.dwSize = sizeof(INITCOMMONCONTROLSEX);
-		iccx.dwICC = ICC_LISTVIEW_CLASSES;
-		InitCommonControlsEx(&iccx);
+		#if defined(_WIN32)
+			INITCOMMONCONTROLSEX iccx;
+			iccx.dwSize = sizeof(INITCOMMONCONTROLSEX);
+			iccx.dwICC = ICC_LISTVIEW_CLASSES;
+			InitCommonControlsEx(&iccx);
 
-		MSG  msg;
-		WNDCLASS wc = { 0 };
-		wc.lpszClassName = TEXT("OMCPPMainWin");
-		HINSTANCE hInstance = GetModuleHandle(NULL);
-		wc.hInstance = hInstance;
-		wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
-		wc.lpfnWndProc = WndProc;
-		RegisterClass(&wc);
-		screenWidth = GetSystemMetrics(SM_CXSCREEN);
-		screenHeight = GetSystemMetrics(SM_CYSCREEN);
-		uint32_t windowWidth, windowHeight;
-		windowWidth = 800;
-		windowHeight = 900;
-		hwndMainWin = CreateWindowW(wc.lpszClassName, L"OsmAndMapCreator++", WS_OVERLAPPEDWINDOW | WS_VISIBLE, 0, 0, windowWidth, windowHeight, 0, 0, hInstance, 0);
-		hwndStartBtn = CreateWindowEx(0, L"BUTTON", L"Convert", WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON, 650, 812, 120, 25, hwndMainWin, (HMENU)ID_STARTBTN, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
-		hwndInputFilenameLabel = CreateWindowEx(0, L"STATIC", L"Input filename", WS_CHILD | WS_VISIBLE | SS_LEFT, 12, 680, 200, 20, hwndMainWin, NULL, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
-		hwndOutputFilenameLabel = CreateWindowEx(0, L"STATIC", L"Output filename", WS_CHILD | WS_VISIBLE | SS_LEFT, 12, 710, 200, 20, hwndMainWin, NULL, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
-		hwndInputFilenameField = CreateWindowEx(WS_EX_CLIENTEDGE, L"EDIT", utf8_to_wstring(inputFilename).c_str(), WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_LEFT, 100, 680, 390, 20, hwndMainWin, (HMENU)ID_INPUT_FILENAME_FIELD, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
-		hwndOutputFilenameField = CreateWindowEx(WS_EX_CLIENTEDGE, L"EDIT", utf8_to_wstring(outputFilename).c_str(), WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_LEFT, 100, 708, 390, 20, hwndMainWin, (HMENU)ID_OUTPUT_FILENAME_FIELD, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
-		hwndSplitLabel = CreateWindowEx(0, L"STATIC", L"Split mode", WS_CHILD | WS_VISIBLE | SS_LEFT, 12, 740, 150, 20, hwndMainWin, NULL, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
-		hwndQuadtreeCombobox = CreateWindowEx(0, L"COMBOBOX", NULL, WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST, 100, 738, 140, 20, hwndMainWin, (HMENU)ID_QUADTREE_COMBOBOX, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
-		//SendMessage(hwndQuadtreeCombobox, CB_ADDSTRING, 0, (LPARAM)L"1-level quadtree 4:");
-		SendMessage(hwndQuadtreeCombobox, CB_ADDSTRING, 0, (LPARAM)L"2-level quadtree 4:4:");
-		SendMessage(hwndQuadtreeCombobox, CB_ADDSTRING, 0, (LPARAM)L"3-level quadtree 4:4:4:");
-		if (forceSplitMode == -1) {
-			SendMessage(hwndQuadtreeCombobox, CB_SETCURSEL, (WPARAM)1, 0);
-			guiSelectedQuadtreeSplit = 1;
-		} else {
-			SendMessage(hwndQuadtreeCombobox, CB_SETCURSEL, (WPARAM)(forceSplitMode - 1), 0);
-			guiSelectedQuadtreeSplit = (forceSplitMode - 1);
-		}
-		hwndSplitCombobox = CreateWindowEx(0, L"COMBOBOX", NULL, WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST, 250, 738, 240, 20, hwndMainWin, (HMENU)ID_SPLIT_COMBOBOX, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
-		SendMessage(hwndSplitCombobox, CB_ADDSTRING, 0, (LPARAM)L"Auto");
-		SendMessage(hwndSplitCombobox, CB_ADDSTRING, 0, (LPARAM)L"1x1 (single box)");
-		SendMessage(hwndSplitCombobox, CB_ADDSTRING, 0, (LPARAM)L"2x2 (4 boxes)");
-		SendMessage(hwndSplitCombobox, CB_ADDSTRING, 0, (LPARAM)L"4x4 (16 boxes)");
-		SendMessage(hwndSplitCombobox, CB_ADDSTRING, 0, (LPARAM)L"8x8 (64 boxes)");
-		SendMessage(hwndSplitCombobox, CB_ADDSTRING, 0, (LPARAM)L"16x16 (256 boxes)");
-		SendMessage(hwndSplitCombobox, CB_ADDSTRING, 0, (LPARAM)L"32x32 (1024 boxes)");
-		SendMessage(hwndSplitCombobox, CB_ADDSTRING, 0, (LPARAM)L"64x64 (4096 boxes; max recommended)");
-		SendMessage(hwndSplitCombobox, CB_ADDSTRING, 0, (LPARAM)L"128x128 (16384 boxes; very slow to render)");
-		//SendMessage(hwndSplitCombobox, CB_ADDSTRING, 0, (LPARAM)L"");
-		SendMessage(hwndSplitCombobox, CB_SETCURSEL, (WPARAM)(forcedSplitPowerOf2 + 1), 0);
-		guiSelectedSplitWithinQuadtree = (forcedSplitPowerOf2 + 1);
-		calculateTotalRectanglesForGUI();
-		hwndRectangleCountLabel = CreateWindowEx(0, L"STATIC", L"Data blocks", WS_CHILD | WS_VISIBLE | SS_LEFT, 500, 740, 200, 20, hwndMainWin, NULL, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
-		calculateTotalRectanglesForGUI();
-		hwndDetailedVectorMapProgressLabel = CreateWindowEx(0, L"STATIC", L"Detailed map", WS_CHILD | WS_VISIBLE | SS_LEFT, 12, 770, 85, 20, hwndMainWin, NULL, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
-		hwndDetailedVectorMapProgressBar = CreateWindowEx(0, PROGRESS_CLASS, NULL, WS_CHILD | WS_VISIBLE | SS_LEFT, 100, 768, 390, 20, hwndMainWin, NULL, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
-		hwndProgressPercentLabel = CreateWindowEx(0, L"STATIC", L"0%", WS_VISIBLE | WS_CHILD | SS_LEFT, 500, 770, 80, 20, hwndMainWin, NULL, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
-		SendMessage(hwndDetailedVectorMapProgressBar, PBM_SETRANGE, 0, (WPARAM)MAKELONG(0, 65535));
-		hwndInputFilenameBrowseButton = CreateWindowEx(0, L"BUTTON", L"Browse...", WS_TABSTOP | WS_VISIBLE | WS_CHILD, 500, 680, 80, 20, hwndMainWin, (HMENU)ID_BROWSE_INPUT_FILE, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
-		hwndOutputFilenameBrowseButton = CreateWindowEx(0, L"BUTTON", L"Browse...", WS_TABSTOP | WS_VISIBLE | WS_CHILD, 500, 708, 80, 20, hwndMainWin, (HMENU)ID_BROWSE_OUTPUT_FILE, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
-		EnumChildWindows(hwndMainWin, (WNDENUMPROC)SetFont, (LPARAM)GetStockObject(DEFAULT_GUI_FONT));
-		if (!inputFilename.empty()) _beginthread(createOBFFile, 0, nullptr);
+			MSG  msg;
+			WNDCLASS wc = { 0 };
+			wc.lpszClassName = TEXT("OMCPPMainWin");
+			HINSTANCE hInstance = GetModuleHandle(NULL);
+			wc.hInstance = hInstance;
+			wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+			wc.lpfnWndProc = WndProc;
+			RegisterClass(&wc);
+			screenWidth = GetSystemMetrics(SM_CXSCREEN);
+			screenHeight = GetSystemMetrics(SM_CYSCREEN);
+			uint32_t windowWidth, windowHeight;
+			windowWidth = 800;
+			windowHeight = 900;
+			hwndMainWin = CreateWindowW(wc.lpszClassName, L"OsmAndMapCreator++", WS_OVERLAPPEDWINDOW | WS_VISIBLE, 0, 0, windowWidth, windowHeight, 0, 0, hInstance, 0);
+			hwndStartBtn = CreateWindowEx(0, L"BUTTON", L"Convert", WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON, 650, 812, 120, 25, hwndMainWin, (HMENU)ID_STARTBTN, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
+			hwndInputFilenameLabel = CreateWindowEx(0, L"STATIC", L"Input filename", WS_CHILD | WS_VISIBLE | SS_LEFT, 12, 680, 200, 20, hwndMainWin, NULL, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
+			hwndOutputFilenameLabel = CreateWindowEx(0, L"STATIC", L"Output filename", WS_CHILD | WS_VISIBLE | SS_LEFT, 12, 710, 200, 20, hwndMainWin, NULL, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
+			hwndInputFilenameField = CreateWindowEx(WS_EX_CLIENTEDGE, L"EDIT", utf8_to_wstring(inputFilename).c_str(), WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_LEFT, 100, 680, 390, 20, hwndMainWin, (HMENU)ID_INPUT_FILENAME_FIELD, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
+			hwndOutputFilenameField = CreateWindowEx(WS_EX_CLIENTEDGE, L"EDIT", utf8_to_wstring(outputFilename).c_str(), WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_LEFT, 100, 708, 390, 20, hwndMainWin, (HMENU)ID_OUTPUT_FILENAME_FIELD, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
+			hwndSplitLabel = CreateWindowEx(0, L"STATIC", L"Split mode", WS_CHILD | WS_VISIBLE | SS_LEFT, 12, 740, 150, 20, hwndMainWin, NULL, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
+			hwndQuadtreeCombobox = CreateWindowEx(0, L"COMBOBOX", NULL, WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST, 100, 738, 140, 20, hwndMainWin, (HMENU)ID_QUADTREE_COMBOBOX, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
+			//SendMessage(hwndQuadtreeCombobox, CB_ADDSTRING, 0, (LPARAM)L"1-level quadtree 4:");
+			SendMessage(hwndQuadtreeCombobox, CB_ADDSTRING, 0, (LPARAM)L"2-level quadtree 4:4:");
+			SendMessage(hwndQuadtreeCombobox, CB_ADDSTRING, 0, (LPARAM)L"3-level quadtree 4:4:4:");
+			if (forceSplitMode == -1) {
+				SendMessage(hwndQuadtreeCombobox, CB_SETCURSEL, (WPARAM)1, 0);
+				guiSelectedQuadtreeSplit = 1;
+			} else {
+				SendMessage(hwndQuadtreeCombobox, CB_SETCURSEL, (WPARAM)(forceSplitMode - 1), 0);
+				guiSelectedQuadtreeSplit = (forceSplitMode - 1);
+			}
+			hwndSplitCombobox = CreateWindowEx(0, L"COMBOBOX", NULL, WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST, 250, 738, 240, 20, hwndMainWin, (HMENU)ID_SPLIT_COMBOBOX, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
+			SendMessage(hwndSplitCombobox, CB_ADDSTRING, 0, (LPARAM)L"Auto");
+			SendMessage(hwndSplitCombobox, CB_ADDSTRING, 0, (LPARAM)L"1x1 (single box)");
+			SendMessage(hwndSplitCombobox, CB_ADDSTRING, 0, (LPARAM)L"2x2 (4 boxes)");
+			SendMessage(hwndSplitCombobox, CB_ADDSTRING, 0, (LPARAM)L"4x4 (16 boxes)");
+			SendMessage(hwndSplitCombobox, CB_ADDSTRING, 0, (LPARAM)L"8x8 (64 boxes)");
+			SendMessage(hwndSplitCombobox, CB_ADDSTRING, 0, (LPARAM)L"16x16 (256 boxes)");
+			SendMessage(hwndSplitCombobox, CB_ADDSTRING, 0, (LPARAM)L"32x32 (1024 boxes)");
+			SendMessage(hwndSplitCombobox, CB_ADDSTRING, 0, (LPARAM)L"64x64 (4096 boxes; max recommended)");
+			SendMessage(hwndSplitCombobox, CB_ADDSTRING, 0, (LPARAM)L"128x128 (16384 boxes; very slow to render)");
+			//SendMessage(hwndSplitCombobox, CB_ADDSTRING, 0, (LPARAM)L"");
+			SendMessage(hwndSplitCombobox, CB_SETCURSEL, (WPARAM)(forcedSplitPowerOf2 + 1), 0);
+			guiSelectedSplitWithinQuadtree = (forcedSplitPowerOf2 + 1);
+			calculateTotalRectanglesForGUI();
+			hwndRectangleCountLabel = CreateWindowEx(0, L"STATIC", L"Data blocks", WS_CHILD | WS_VISIBLE | SS_LEFT, 500, 740, 200, 20, hwndMainWin, NULL, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
+			calculateTotalRectanglesForGUI();
+			hwndDetailedVectorMapProgressLabel = CreateWindowEx(0, L"STATIC", L"Detailed map", WS_CHILD | WS_VISIBLE | SS_LEFT, 12, 770, 85, 20, hwndMainWin, NULL, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
+			hwndDetailedVectorMapProgressBar = CreateWindowEx(0, PROGRESS_CLASS, NULL, WS_CHILD | WS_VISIBLE | SS_LEFT, 100, 768, 390, 20, hwndMainWin, NULL, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
+			hwndProgressPercentLabel = CreateWindowEx(0, L"STATIC", L"0%", WS_VISIBLE | WS_CHILD | SS_LEFT, 500, 770, 80, 20, hwndMainWin, NULL, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
+			SendMessage(hwndDetailedVectorMapProgressBar, PBM_SETRANGE, 0, (WPARAM)MAKELONG(0, 65535));
+			hwndInputFilenameBrowseButton = CreateWindowEx(0, L"BUTTON", L"Browse...", WS_TABSTOP | WS_VISIBLE | WS_CHILD, 500, 680, 80, 20, hwndMainWin, (HMENU)ID_BROWSE_INPUT_FILE, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
+			hwndOutputFilenameBrowseButton = CreateWindowEx(0, L"BUTTON", L"Browse...", WS_TABSTOP | WS_VISIBLE | WS_CHILD, 500, 708, 80, 20, hwndMainWin, (HMENU)ID_BROWSE_OUTPUT_FILE, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
+			EnumChildWindows(hwndMainWin, (WNDENUMPROC)SetFont, (LPARAM)GetStockObject(DEFAULT_GUI_FONT));
+			//if (!inputFilename.empty()) _beginthread(createOBFFile, 0, nullptr);
+			thread t;
+			if (!inputFilename.empty()) t = thread(createOBFFile, (void*)nullptr);
 
-		while (GetMessage(&msg, NULL, 0, 0)) {
-			TranslateMessage(&msg);
-			DispatchMessage(&msg);
-		}
-		delete[] progressBitmapPtr;
+			while (GetMessage(&msg, NULL, 0, 0)) {
+				TranslateMessage(&msg);
+				DispatchMessage(&msg);
+			}
+			delete[] progressBitmapPtr;
+		#elif defined(__linux__)
+			createOBFFile(nullptr);
+		#endif
+	} else {
+		createOBFFile(nullptr);
 	}
+	#if defined(__linux__)
+		cout << endl;
+	#endif
 	return 0;
 }
 
@@ -480,7 +510,7 @@ void createOBFFile(void *param) {
 	uint64_t mapIndexSize = 0;
 
 	writeMapIndex(inputFilePath.stem().string());
-	mapIndexSize = getFileSize(utf8_to_wstring("mapIndex_" + to_string(pid)).c_str());
+	mapIndexSize = getFileSize(string("mapIndex_" + to_string(pid)));
 	currentDiskUsage += mapIndexSize;
 	//cout << endl << "mapIndex temp file size: " << mapIndexSize;
 	writeOBFVarint32or64BE(cos, mapIndexSize);
@@ -520,233 +550,238 @@ void calculateTotalRectanglesForGUI() {
 			break;
 	}
 
-	if (guiSelectedSplitWithinQuadtree == 0 /* Auto */) {
-		text = L"At least " + to_wstring((unsigned long)totalRectangles) + L" data blocks";
-	} else {
-		/*switch (guiSelectedSplitWithinQuadtree) {
+	#if defined(_WIN32)
+		if (guiSelectedSplitWithinQuadtree == 0 /* Auto */) {
+			text = L"At least " + to_wstring((unsigned long)totalRectangles) + L" data blocks";
+		} else {
+			/*switch (guiSelectedSplitWithinQuadtree) {
 
-		}*/
-		totalRectangles *= ((1 << (guiSelectedSplitWithinQuadtree - 1)) * (1 << (guiSelectedSplitWithinQuadtree - 1)));
-		text = to_wstring((unsigned long)totalRectangles) + L" data blocks";
-	}
-	SetWindowText(hwndRectangleCountLabel, text.c_str());
+			}*/
+			totalRectangles *= ((1 << (guiSelectedSplitWithinQuadtree - 1)) * (1 << (guiSelectedSplitWithinQuadtree - 1)));
+			text = to_wstring((unsigned long)totalRectangles) + L" data blocks";
+		}
+		SetWindowText(hwndRectangleCountLabel, text.c_str());
+	#elif defined(__linux__)
+	#endif
 }
 
-LRESULT CALLBACK WndProc(HWND hwndMainWin, UINT msg, WPARAM wParam, LPARAM lParam) {
-	RECT windowRect;
-	int width, height;
-	HDC hdc;
-	HWND hctrlWnd;
-	PAINTSTRUCT ps;
-	HPEN h_LightGray_Pen, hOldPen;
-	HGDIOBJ originalGDIObj;
+#if defined(_WIN32)
+	LRESULT CALLBACK WndProc(HWND hwndMainWin, UINT msg, WPARAM wParam, LPARAM lParam) {
+		RECT windowRect;
+		int width, height;
+		HDC hdc;
+		HWND hctrlWnd;
+		PAINTSTRUCT ps;
+		HPEN h_LightGray_Pen, hOldPen;
+		HGDIOBJ originalGDIObj;
 
-	BITMAP bmp;
-	HDC bmpHDC;
-	LPMINMAXINFO lpMMI;
+		BITMAP bmp;
+		HDC bmpHDC;
+		LPMINMAXINFO lpMMI;
 
-	//Making these static prevents odd drawing errors in WM_PAINT
-	static int statusBarParts[4] = { 0, 0, 0, 0 };
+		//Making these static prevents odd drawing errors in WM_PAINT
+		static int statusBarParts[4] = { 0, 0, 0, 0 };
 
-	switch (msg) {
-		case WM_CREATE:
-			{
-			//Apply the correct (non-bold) font to all the UI elements
-			EnumChildWindows(hwndMainWin, (WNDENUMPROC)SetFont, (LPARAM)GetStockObject(DEFAULT_GUI_FONT));
-
-			//Set the default cursor
-			SetCursor(LoadCursor(0, IDC_ARROW));
-			}
-			break;
-		case WM_PAINT:
-			{
+		switch (msg) {
+			case WM_CREATE:
 				{
-					PAINTSTRUCT ps;
-					HDC hdc = BeginPaint(hwndMainWin, &ps);
-					RECT windowRect;
-					HGDIOBJ hOldPen;
-					HGDIOBJ hOldBrush;
-					unsigned int progressAreaWidth, progressAreaHeight;
-					GetWindowRect(hwndMainWin, &windowRect);
-					progressAreaWidth = (windowRect.right - windowRect.left) - 28;
-					progressAreaHeight = (windowRect.bottom - windowRect.top) - 250;
-					if (progressBitmapWidth > 0 && progressBitmapHeight > 0) {
-						SetStretchBltMode(hdc, COLORONCOLOR);
-						HDC progressImageHDC = CreateCompatibleDC(hdc);
-						BITMAP bm;
-						bm.bmType = 0;
-						bm.bmWidth = progressBitmapWidth;
-						bm.bmHeight = progressBitmapHeight;
-						bm.bmWidthBytes = progressBitmapWidth * 4;
-						bm.bmPlanes = 1;
-						bm.bmBitsPixel = 32;
-						bm.bmBits = progressBitmapPtr;
-						HBITMAP progressBitmap = CreateBitmapIndirect(&bm);
-						SelectObject(progressImageHDC, progressBitmap);
-						StretchBlt(hdc, 12, 12, progressAreaWidth - 12, progressAreaHeight - 12, progressImageHDC, 0, 0, progressBitmapWidth, progressBitmapHeight, SRCCOPY);
-						DeleteObject(progressBitmap);
-						DeleteDC(progressImageHDC);
-					} else {
-						HBRUSH hBrush = CreateSolidBrush(RGB(255, 255, 255));
-						hOldPen = SelectObject(hdc, GetStockObject(NULL_PEN));
-						hOldBrush = SelectObject(hdc, hBrush);
-						Rectangle(hdc, 12, 12, progressAreaWidth + 1, progressAreaHeight + 1);
-						SelectObject(hdc, hOldPen);
+				//Apply the correct (non-bold) font to all the UI elements
+				EnumChildWindows(hwndMainWin, (WNDENUMPROC)SetFont, (LPARAM)GetStockObject(DEFAULT_GUI_FONT));
+
+				//Set the default cursor
+				SetCursor(LoadCursor(0, IDC_ARROW));
+				}
+				break;
+			case WM_PAINT:
+				{
+					{
+						PAINTSTRUCT ps;
+						HDC hdc = BeginPaint(hwndMainWin, &ps);
+						RECT windowRect;
+						HGDIOBJ hOldPen;
+						HGDIOBJ hOldBrush;
+						unsigned int progressAreaWidth, progressAreaHeight;
+						GetWindowRect(hwndMainWin, &windowRect);
+						progressAreaWidth = (windowRect.right - windowRect.left) - 28;
+						progressAreaHeight = (windowRect.bottom - windowRect.top) - 250;
+						if (progressBitmapWidth > 0 && progressBitmapHeight > 0) {
+							SetStretchBltMode(hdc, COLORONCOLOR);
+							HDC progressImageHDC = CreateCompatibleDC(hdc);
+							BITMAP bm;
+							bm.bmType = 0;
+							bm.bmWidth = progressBitmapWidth;
+							bm.bmHeight = progressBitmapHeight;
+							bm.bmWidthBytes = progressBitmapWidth * 4;
+							bm.bmPlanes = 1;
+							bm.bmBitsPixel = 32;
+							bm.bmBits = progressBitmapPtr;
+							HBITMAP progressBitmap = CreateBitmapIndirect(&bm);
+							SelectObject(progressImageHDC, progressBitmap);
+							StretchBlt(hdc, 12, 12, progressAreaWidth - 12, progressAreaHeight - 12, progressImageHDC, 0, 0, progressBitmapWidth, progressBitmapHeight, SRCCOPY);
+							DeleteObject(progressBitmap);
+							DeleteDC(progressImageHDC);
+						} else {
+							HBRUSH hBrush = CreateSolidBrush(RGB(255, 255, 255));
+							hOldPen = SelectObject(hdc, GetStockObject(NULL_PEN));
+							hOldBrush = SelectObject(hdc, hBrush);
+							Rectangle(hdc, 12, 12, progressAreaWidth + 1, progressAreaHeight + 1);
+							SelectObject(hdc, hOldPen);
+							SelectObject(hdc, hOldBrush);
+							DeleteObject(hBrush);
+						}
+
+						//Draw the 3D edge
+						MoveToEx(hdc, 10, 10, NULL);
+						HPEN lightGrayOuterBorderColor = CreatePen(PS_SOLID, 1, RGB(208, 208, 208));
+						HPEN lightGrayMiddleBorderColor = CreatePen(PS_SOLID, 1, RGB(128, 128, 128));
+						HPEN darkGrayInnerBorderColor = CreatePen(PS_SOLID, 1, RGB(64, 64, 64));
+						hOldPen = SelectObject(hdc, lightGrayOuterBorderColor);
+						hOldBrush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+						Rectangle(hdc, 10, 10, progressAreaWidth + 2, progressAreaHeight + 2);
+						SelectObject(hdc, lightGrayMiddleBorderColor);
+						MoveToEx(hdc, 11, 11, NULL);
+						LineTo(hdc, progressAreaWidth, 11);
+						SelectObject(hdc, darkGrayInnerBorderColor);
+						MoveToEx(hdc, 12, 12, NULL);
+						LineTo(hdc, progressAreaWidth - 1, 12);
+						MoveToEx(hdc, 10, 11, NULL);
+						SelectObject(hdc, lightGrayOuterBorderColor);
+						SelectObject(hdc, lightGrayMiddleBorderColor);
+						MoveToEx(hdc, 11, 12, NULL);
+						LineTo(hdc, 11, progressAreaHeight);
+						MoveToEx(hdc, 12, 13, NULL);
+						SelectObject(hdc, darkGrayInnerBorderColor);
+						LineTo(hdc, 12, progressAreaHeight - 1);
+						MoveToEx(hdc, 12, progressAreaHeight - 1, NULL);
+						SelectObject(hdc, lightGrayOuterBorderColor);
+						LineTo(hdc, progressAreaWidth, progressAreaHeight - 1);
+						MoveToEx(hdc, progressAreaWidth - 1, 12, NULL);
+						SelectObject(hdc, lightGrayOuterBorderColor);
+						LineTo(hdc, progressAreaWidth - 1, progressAreaHeight);
+						MoveToEx(hdc, 11, progressAreaHeight, NULL);
+						SelectObject(hdc, GetStockObject(WHITE_PEN));
+						LineTo(hdc, progressAreaWidth - 1, progressAreaHeight);
 						SelectObject(hdc, hOldBrush);
-						DeleteObject(hBrush);
-					}
-
-					//Draw the 3D edge
-					MoveToEx(hdc, 10, 10, NULL);
-					HPEN lightGrayOuterBorderColor = CreatePen(PS_SOLID, 1, RGB(208, 208, 208));
-					HPEN lightGrayMiddleBorderColor = CreatePen(PS_SOLID, 1, RGB(128, 128, 128));
-					HPEN darkGrayInnerBorderColor = CreatePen(PS_SOLID, 1, RGB(64, 64, 64));
-					hOldPen = SelectObject(hdc, lightGrayOuterBorderColor);
-					hOldBrush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
-					Rectangle(hdc, 10, 10, progressAreaWidth + 2, progressAreaHeight + 2);
-					SelectObject(hdc, lightGrayMiddleBorderColor);
-					MoveToEx(hdc, 11, 11, NULL);
-					LineTo(hdc, progressAreaWidth, 11);
-					SelectObject(hdc, darkGrayInnerBorderColor);
-					MoveToEx(hdc, 12, 12, NULL);
-					LineTo(hdc, progressAreaWidth - 1, 12);
-					MoveToEx(hdc, 10, 11, NULL);
-					SelectObject(hdc, lightGrayOuterBorderColor);
-					SelectObject(hdc, lightGrayMiddleBorderColor);
-					MoveToEx(hdc, 11, 12, NULL);
-					LineTo(hdc, 11, progressAreaHeight);
-					MoveToEx(hdc, 12, 13, NULL);
-					SelectObject(hdc, darkGrayInnerBorderColor);
-					LineTo(hdc, 12, progressAreaHeight - 1);
-					MoveToEx(hdc, 12, progressAreaHeight - 1, NULL);
-					SelectObject(hdc, lightGrayOuterBorderColor);
-					LineTo(hdc, progressAreaWidth, progressAreaHeight - 1);
-					MoveToEx(hdc, progressAreaWidth - 1, 12, NULL);
-					SelectObject(hdc, lightGrayOuterBorderColor);
-					LineTo(hdc, progressAreaWidth - 1, progressAreaHeight);
-					MoveToEx(hdc, 11, progressAreaHeight, NULL);
-					SelectObject(hdc, GetStockObject(WHITE_PEN));
-					LineTo(hdc, progressAreaWidth - 1, progressAreaHeight);
-					SelectObject(hdc, hOldBrush);
-					SelectObject(hdc, hOldPen);
-					DeleteObject(lightGrayOuterBorderColor);
-					DeleteObject(lightGrayMiddleBorderColor);
-					DeleteObject(darkGrayInnerBorderColor);
+						SelectObject(hdc, hOldPen);
+						DeleteObject(lightGrayOuterBorderColor);
+						DeleteObject(lightGrayMiddleBorderColor);
+						DeleteObject(darkGrayInnerBorderColor);
 					
-					EndPaint(hwndMainWin, &ps);
-				}
-			}
-			break;
-		case WM_SIZE:
-			{
-				RECT windowRect;
-				unsigned int windowWidth, windowHeight;
-				GetWindowRect(hwndMainWin, &windowRect);
-				windowWidth = windowRect.right - windowRect.left;
-				windowHeight = windowRect.bottom - windowRect.top;
-				MoveWindow(hwndStartBtn, (windowWidth - 150), (windowHeight - 88), 120, 25, TRUE);
-				MoveWindow(hwndInputFilenameLabel, 12, (windowHeight - 220), 200, 20, TRUE);
-				MoveWindow(hwndOutputFilenameLabel, 12, (windowHeight - 190), 200, 20, TRUE);
-				MoveWindow(hwndInputFilenameField, 100, (windowHeight - 220), 390, 20, TRUE);
-				MoveWindow(hwndOutputFilenameField, 100, (windowHeight - 192), 390, 20, TRUE);
-				MoveWindow(hwndSplitLabel, 12, (windowHeight - 160), 150, 20, TRUE);
-				MoveWindow(hwndQuadtreeCombobox, 100, (windowHeight - 162), 140, 20, TRUE);
-				MoveWindow(hwndSplitCombobox, 250, (windowHeight - 162), 240, 20, TRUE);
-				MoveWindow(hwndRectangleCountLabel, 500, (windowHeight - 160), 200, 20, TRUE);
-				MoveWindow(hwndDetailedVectorMapProgressLabel, 12, (windowHeight - 130), 85, 20, TRUE);
-				MoveWindow(hwndDetailedVectorMapProgressBar, 100, (windowHeight - 132), 390, 20, TRUE);
-				MoveWindow(hwndProgressPercentLabel, 500, (windowHeight - 130), 80, 20, TRUE);
-				MoveWindow(hwndInputFilenameBrowseButton, 500, (windowHeight - 220), 80, 20, TRUE);
-				MoveWindow(hwndOutputFilenameBrowseButton, 500, (windowHeight - 192), 80, 20, TRUE);
-				InvalidateRect(hwndMainWin, NULL, TRUE);
-				UpdateWindow(hwndMainWin);
-			}
-			break;
-		case WM_COMMAND:
-			{
-				if (HIWORD(wParam) == BN_CLICKED) {
-					switch (LOWORD(wParam)) {
-						case ID_STARTBTN:
-							{
-								WCHAR buffer[MAX_PATH];
-								GetWindowText(hwndInputFilenameField, buffer, MAX_PATH);
-								inputFilename = wstring_to_utf8(wstring(buffer));
-								GetWindowText(hwndOutputFilenameField, buffer, MAX_PATH);
-								outputFilename = wstring_to_utf8(wstring(buffer));
-								_beginthread(createOBFFile, 0, nullptr);
-							}
-							break;
-						case ID_BROWSE_INPUT_FILE:
-							{
-								OPENFILENAME ofn;
-								TCHAR szFileName[MAX_PATH] = L"";
-								ZeroMemory(&ofn, sizeof(ofn));
-								ofn.lStructSize = sizeof(ofn);
-								ofn.hwndOwner = hwndMainWin;
-								ofn.lpstrFilter = L"SQLite Database Files (*.db)\0*.db\0All Files (*.*)\0*.*\0";
-								ofn.lpstrFile = szFileName;
-								ofn.nMaxFile = MAX_PATH;
-								ofn.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_HIDEREADONLY;
-								ofn.lpstrDefExt = L"db";
-								if (GetOpenFileName(&ofn)) SetWindowText(hwndInputFilenameField, szFileName);
-								if (GetWindowTextLength(hwndOutputFilenameField) == 0) {
-									filesystem::path outputFilenamePath = wstring(szFileName);
-									outputFilenamePath = outputFilenamePath.parent_path() / outputFilenamePath.stem();
-									outputFilename = outputFilenamePath.string() + ".obf";
-									SetWindowText(hwndOutputFilenameField, utf8_to_wstring(outputFilename).c_str());
-								}
-							}
-							break;
-						case ID_BROWSE_OUTPUT_FILE:
-							{
-								OPENFILENAME ofn;
-								TCHAR szFileName[MAX_PATH] = L"";
-								ZeroMemory(&ofn, sizeof(ofn));
-								ofn.lStructSize = sizeof(ofn);
-								ofn.hwndOwner = hwndMainWin;
-								ofn.lpstrFilter = L"OsmAnd OBF Files (*.obf)\0*.obf\0All Files (*.*)\0*.*\0";
-								ofn.lpstrFile = szFileName;
-								ofn.nMaxFile = MAX_PATH;
-								ofn.Flags = OFN_EXPLORER | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY | OFN_OVERWRITEPROMPT;
-								ofn.lpstrDefExt = L"obf";
-								if (GetSaveFileName(&ofn)) SetWindowText(hwndOutputFilenameField, szFileName);
-							}
-							break;
+						EndPaint(hwndMainWin, &ps);
 					}
 				}
-
-				if (LOWORD(wParam) == ID_QUADTREE_COMBOBOX) {
-					guiSelectedQuadtreeSplit = SendMessage(hwndQuadtreeCombobox, CB_GETCURSEL, 0, 0);
-					calculateTotalRectanglesForGUI();
-				} else if (LOWORD(wParam) == ID_SPLIT_COMBOBOX) {
-					guiSelectedSplitWithinQuadtree = SendMessage(hwndSplitCombobox, CB_GETCURSEL, 0, 0);
-					calculateTotalRectanglesForGUI();
+				break;
+			case WM_SIZE:
+				{
+					RECT windowRect;
+					unsigned int windowWidth, windowHeight;
+					GetWindowRect(hwndMainWin, &windowRect);
+					windowWidth = windowRect.right - windowRect.left;
+					windowHeight = windowRect.bottom - windowRect.top;
+					MoveWindow(hwndStartBtn, (windowWidth - 150), (windowHeight - 88), 120, 25, TRUE);
+					MoveWindow(hwndInputFilenameLabel, 12, (windowHeight - 220), 200, 20, TRUE);
+					MoveWindow(hwndOutputFilenameLabel, 12, (windowHeight - 190), 200, 20, TRUE);
+					MoveWindow(hwndInputFilenameField, 100, (windowHeight - 220), 390, 20, TRUE);
+					MoveWindow(hwndOutputFilenameField, 100, (windowHeight - 192), 390, 20, TRUE);
+					MoveWindow(hwndSplitLabel, 12, (windowHeight - 160), 150, 20, TRUE);
+					MoveWindow(hwndQuadtreeCombobox, 100, (windowHeight - 162), 140, 20, TRUE);
+					MoveWindow(hwndSplitCombobox, 250, (windowHeight - 162), 240, 20, TRUE);
+					MoveWindow(hwndRectangleCountLabel, 500, (windowHeight - 160), 200, 20, TRUE);
+					MoveWindow(hwndDetailedVectorMapProgressLabel, 12, (windowHeight - 130), 85, 20, TRUE);
+					MoveWindow(hwndDetailedVectorMapProgressBar, 100, (windowHeight - 132), 390, 20, TRUE);
+					MoveWindow(hwndProgressPercentLabel, 500, (windowHeight - 130), 80, 20, TRUE);
+					MoveWindow(hwndInputFilenameBrowseButton, 500, (windowHeight - 220), 80, 20, TRUE);
+					MoveWindow(hwndOutputFilenameBrowseButton, 500, (windowHeight - 192), 80, 20, TRUE);
+					InvalidateRect(hwndMainWin, NULL, TRUE);
+					UpdateWindow(hwndMainWin);
 				}
-			}
-			break;
-		case WM_USER_REDRAW:
-			{
-				SendMessage(hwndDetailedVectorMapProgressBar, PBM_SETPOS, (WPARAM)((unsigned int)((progressCompletedRectangles * 65535) / progressTotalRectangles)), 0);
-				ostringstream percentStream;
-				percentStream << fixed << setprecision(3) << ((progressCompletedRectangles * 100.0) / progressTotalRectangles);
-				wstring percentString = utf8_to_wstring(percentStream.str());
-				percentString += L"%";
-				SendMessage(hwndProgressPercentLabel, WM_SETTEXT, 0, (LPARAM)percentString.c_str());
-				InvalidateRect(hwndMainWin, NULL, TRUE);
-				UpdateWindow(hwndMainWin);
-			}
-			break;
-		case WM_DESTROY:
-			PostQuitMessage(0);
-			break;
-	}
-	return DefWindowProc(hwndMainWin, msg, wParam, lParam);
-}
+				break;
+			case WM_COMMAND:
+				{
+					if (HIWORD(wParam) == BN_CLICKED) {
+						switch (LOWORD(wParam)) {
+							case ID_STARTBTN:
+								{
+									WCHAR buffer[MAX_PATH];
+									GetWindowText(hwndInputFilenameField, buffer, MAX_PATH);
+									inputFilename = wstring_to_utf8(wstring(buffer));
+									GetWindowText(hwndOutputFilenameField, buffer, MAX_PATH);
+									outputFilename = wstring_to_utf8(wstring(buffer));
+									thread(createOBFFile, nullptr);
+								}
+								break;
+							case ID_BROWSE_INPUT_FILE:
+								{
+									OPENFILENAME ofn;
+									TCHAR szFileName[MAX_PATH] = L"";
+									ZeroMemory(&ofn, sizeof(ofn));
+									ofn.lStructSize = sizeof(ofn);
+									ofn.hwndOwner = hwndMainWin;
+									ofn.lpstrFilter = L"SQLite Database Files (*.db)\0*.db\0All Files (*.*)\0*.*\0";
+									ofn.lpstrFile = szFileName;
+									ofn.nMaxFile = MAX_PATH;
+									ofn.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_HIDEREADONLY;
+									ofn.lpstrDefExt = L"db";
+									if (GetOpenFileName(&ofn)) SetWindowText(hwndInputFilenameField, szFileName);
+									if (GetWindowTextLength(hwndOutputFilenameField) == 0) {
+										filesystem::path outputFilenamePath = wstring(szFileName);
+										outputFilenamePath = outputFilenamePath.parent_path() / outputFilenamePath.stem();
+										outputFilename = outputFilenamePath.string() + ".obf";
+										SetWindowText(hwndOutputFilenameField, utf8_to_wstring(outputFilename).c_str());
+									}
+								}
+								break;
+							case ID_BROWSE_OUTPUT_FILE:
+								{
+									OPENFILENAME ofn;
+									TCHAR szFileName[MAX_PATH] = L"";
+									ZeroMemory(&ofn, sizeof(ofn));
+									ofn.lStructSize = sizeof(ofn);
+									ofn.hwndOwner = hwndMainWin;
+									ofn.lpstrFilter = L"OsmAnd OBF Files (*.obf)\0*.obf\0All Files (*.*)\0*.*\0";
+									ofn.lpstrFile = szFileName;
+									ofn.nMaxFile = MAX_PATH;
+									ofn.Flags = OFN_EXPLORER | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY | OFN_OVERWRITEPROMPT;
+									ofn.lpstrDefExt = L"obf";
+									if (GetSaveFileName(&ofn)) SetWindowText(hwndOutputFilenameField, szFileName);
+								}
+								break;
+						}
+					}
 
-bool CALLBACK SetFont(HWND child, LPARAM font) {
-	SendMessage(child, WM_SETFONT, font, true);
-	return true;
-}
+					if (LOWORD(wParam) == ID_QUADTREE_COMBOBOX) {
+						guiSelectedQuadtreeSplit = SendMessage(hwndQuadtreeCombobox, CB_GETCURSEL, 0, 0);
+						calculateTotalRectanglesForGUI();
+					} else if (LOWORD(wParam) == ID_SPLIT_COMBOBOX) {
+						guiSelectedSplitWithinQuadtree = SendMessage(hwndSplitCombobox, CB_GETCURSEL, 0, 0);
+						calculateTotalRectanglesForGUI();
+					}
+				}
+				break;
+			case WM_USER_REDRAW:
+				{
+					SendMessage(hwndDetailedVectorMapProgressBar, PBM_SETPOS, (WPARAM)((unsigned int)((progressCompletedRectangles * 65535) / progressTotalRectangles)), 0);
+					ostringstream percentStream;
+					percentStream << fixed << setprecision(3) << ((progressCompletedRectangles * 100.0) / progressTotalRectangles);
+					wstring percentString = utf8_to_wstring(percentStream.str());
+					percentString += L"%";
+					SendMessage(hwndProgressPercentLabel, WM_SETTEXT, 0, (LPARAM)percentString.c_str());
+					InvalidateRect(hwndMainWin, NULL, TRUE);
+					UpdateWindow(hwndMainWin);
+				}
+				break;
+			case WM_DESTROY:
+				PostQuitMessage(0);
+				break;
+		}
+		return DefWindowProc(hwndMainWin, msg, wParam, lParam);
+	}
+
+	bool CALLBACK SetFont(HWND child, LPARAM font) {
+		SendMessage(child, WM_SETFONT, font, true);
+		return true;
+	}
+#endif
 
 void printHelp() {
 	cout << "OsmAndMapCreator++ version 0.1.10";
@@ -794,7 +829,9 @@ uint64_t writeMapIndex(string name) {
 	} else {
 		//Automatically find a good split value
 		powerOf2Split = getClosestNextLowerPowerOf2(max(overallBoundingRectangle.widthInt32 / (IDEAL_BLOCK_MAX_SIZE * multiplierForBlockSizeDivider), overallBoundingRectangle.heightInt32 / (IDEAL_BLOCK_MAX_SIZE * multiplierForBlockSizeDivider))); //Default to a bigger split (fewer blocks)
-		SendMessage(hwndSplitCombobox, CB_SETCURSEL, (WPARAM)(powerOf2Split + 1), 0);
+		#if defined(_WIN32)
+			SendMessage(hwndSplitCombobox, CB_SETCURSEL, (WPARAM)(powerOf2Split + 1), 0);
+		#endif
 		guiSelectedSplitWithinQuadtree = powerOf2Split + 1;
 		calculateTotalRectanglesForGUI();
 	}
@@ -807,7 +844,7 @@ uint64_t writeMapIndex(string name) {
 	} else if (forceSplitMode == 2 /* 3-level quadtree */) {
 		writeOsmAndStructure_mapIndex_detailed_level_4_4_4_pow2_split(powerOf2Split, false /* detailed zoom */);
 	}
-	int64_t mapRootLevelSize = getFileSize(utf8_to_wstring("mapRootLevel_" + to_string(pid)).c_str());
+	int64_t mapRootLevelSize = getFileSize(string("mapRootLevel_" + to_string(pid)));
 	writeOBFVarint32or64BE(mapIndexCos, mapRootLevelSize);
 	//cout << endl << "mapRootLevel size = " << mapRootLevelSize;
 	copyRawFileIntoCodedOutputStream(mapIndexCos, "mapRootLevel_" + to_string(pid), mapRootLevelSize);
@@ -827,7 +864,7 @@ uint64_t writeMapIndex(string name) {
 	} else if (forceSplitMode == 2 /* 3-level quadtree */) {
 		writeOsmAndStructure_mapIndex_detailed_level_4_4_4_pow2_split(powerOf2Split, true /* detailed zoom */);
 	}
-	mapRootLevelSize = getFileSize(utf8_to_wstring("mapRootLevel_" + to_string(pid)).c_str());
+	mapRootLevelSize = getFileSize(string("mapRootLevel_" + to_string(pid)));
 	writeOBFVarint32or64BE(mapIndexCos, mapRootLevelSize);
 	//cout << endl << "mapRootLevel size = " << mapRootLevelSize;
 	copyRawFileIntoCodedOutputStream(mapIndexCos, "mapRootLevel_" + to_string(pid), mapRootLevelSize);
@@ -960,7 +997,7 @@ void writeOsmAndStructure_mapIndex_detailed_level_1x1(unsigned char *coordinates
 	//MapRootLevel.blocks
 	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kBlocksFieldNumber << 3) | 2);
 	writeOsmAndStructure_mapIndex_levels_block("mapDataBlock_" + to_string(pid), &overallBoundingRectangle, 0, db, res, 0, coordinatesByteArrayPtrWithinThread, typesByteArrayPtrWithinThread, additionalTypesByteArrayPtrWithinThread, stringNamesByteArrayPtrWithinThread, false);
-	uint64_t mapDataBlockSize = getFileSize(utf8_to_wstring("mapDataBlock_" + to_string(pid)).c_str());
+	uint64_t mapDataBlockSize = getFileSize(string("mapDataBlock_" + to_string(pid)));
 	mapRootLevelTempCos.WriteVarint32(mapDataBlockSize);
 	copyRawFileIntoCodedOutputStream(mapRootLevelTempCos, "mapDataBlock_" + to_string(pid), mapDataBlockSize);
 	if (!shouldKeepTempFiles) remove(string("mapDataBlock_" + to_string(pid)).c_str());
@@ -1056,7 +1093,7 @@ void writeOsmAndStructure_mapIndex_detailed_level_single_power_of_2_split(int po
 	stringNamesByteArrayUniquePtrArrayForThreads[3] = make_unique<unsigned char[]>(1048576);
 
 	MapDataBlockThreadInfo threadInfo[4];
-	uintptr_t threadHandles[4];
+	thread threadHandles[4];
 	threadInfo[0].dbConnection = thread0DBConnection;
 	threadInfo[0].stmt = thread0Stmt;
 	threadInfo[1].dbConnection = thread1DBConnection;
@@ -1074,14 +1111,14 @@ void writeOsmAndStructure_mapIndex_detailed_level_single_power_of_2_split(int po
 		threadInfo[i].additionalTypesByteArrayPtrWithinThread = additionalTypesByteArrayUniquePtrArrayForThreads[i].get();
 		threadInfo[i].stringNamesByteArrayPtrWithinThread = stringNamesByteArrayUniquePtrArrayForThreads[i].get();
 		threadInfo[i].mediumZoom = mediumZoom;
-		threadHandles[i] = _beginthread(writeOsmAndStructure_mapIndex_levels_block_SingleSplitThreadWorker, 0, &threadInfo[i]);
+		threadHandles[i] = thread(writeOsmAndStructure_mapIndex_levels_block_SingleSplitThreadWorker, &threadInfo[i]);
 	}
 
 	cout << endl << "Waiting for threads...";
-	for (int i = 0; i < 4; i++) WaitForSingleObject((HANDLE)threadHandles[i], INFINITE);
+	for (int i = 0; i < 4; i++) threadHandles[i].join();
 	cout << "done";
 	unique_ptr<uint64_t[]> mapDataBlockSizes = make_unique<uint64_t[]>(totalBoxCount);
-	for (int i = 0; i < totalBoxCount; i++) mapDataBlockSizes[i] = getFileSize(utf8_to_wstring(string("mapDataBlock" + to_string(i) + ".tmp")).c_str());
+	for (int i = 0; i < totalBoxCount; i++) mapDataBlockSizes[i] = getFileSize(string("mapDataBlock" + to_string(i) + ".tmp"));
 
 	if (thread0Stmt != nullptr) {
 		sqlite3_finalize(thread0Stmt);
@@ -1301,7 +1338,7 @@ void writeOsmAndStructure_mapIndex_detailed_level_4_4_pow2_split(int pow2, bool 
 	stringNamesByteArrayUniquePtrArrayForThreads[3] = make_unique<unsigned char[]>(1048576);
 
 	MapDataBlockThreadInfo threadInfo[4];
-	uintptr_t threadHandles[4];
+	thread threadHandles[4];
 	threadInfo[0].dbConnection = thread0DBConnection;
 	threadInfo[0].stmt = thread0Stmt;
 	threadInfo[1].dbConnection = thread1DBConnection;
@@ -1320,13 +1357,11 @@ void writeOsmAndStructure_mapIndex_detailed_level_4_4_pow2_split(int pow2, bool 
 		threadInfo[i].stringNamesByteArrayPtrWithinThread = stringNamesByteArrayUniquePtrArrayForThreads[i].get();
 		threadInfo[i].mediumZoom = mediumZoom;
 		threadInfo[i].mapDataBlockSizes = mapDataBlockSizes.get();
-		threadHandles[i] = _beginthread(writeOsmAndStructure_mapIndex_levels_block_SingleSplitThreadWorker, 0, &threadInfo[i]);
+		threadHandles[i] = thread(writeOsmAndStructure_mapIndex_levels_block_SingleSplitThreadWorker, &threadInfo[i]);
 	}
 
-	
-
 	cout << endl << "Waiting for threads...";
-	for (int i = 0; i < 4; i++) WaitForSingleObject((HANDLE)threadHandles[i], INFINITE);
+	for (int i = 0; i < 4; i++) threadHandles[i].join();
 	cout << "done";
 	//for (int i = 0; i < (totalBoxCount); i++) mapDataBlockSizes[i] = getFileSize(utf8_to_wstring(string("mapDataBlock" + to_string(i) + ".tmp")).c_str());
 
@@ -1743,7 +1778,7 @@ void writeOsmAndStructure_mapIndex_detailed_level_4_4_4_pow2_split(int pow2, boo
 	stringNamesByteArrayUniquePtrArrayForThreads[3] = make_unique<unsigned char[]>(1048576);
 
 	MapDataBlockThreadInfo threadInfo[4];
-	uintptr_t threadHandles[4];
+	thread threadHandles[4];
 	threadInfo[0].dbConnection = thread0DBConnection;
 	threadInfo[0].stmt = thread0Stmt;
 	threadInfo[1].dbConnection = thread1DBConnection;
@@ -1764,13 +1799,11 @@ void writeOsmAndStructure_mapIndex_detailed_level_4_4_4_pow2_split(int pow2, boo
 		threadInfo[i].stringNamesByteArrayPtrWithinThread = stringNamesByteArrayUniquePtrArrayForThreads[i].get();
 		threadInfo[i].mediumZoom = mediumZoom;
 		threadInfo[i].mapDataBlockSizes = mapDataBlockSizes.get();
-		threadHandles[i] = _beginthread(writeOsmAndStructure_mapIndex_levels_block_SingleSplitThreadWorker, 0, &threadInfo[i]);
+		threadHandles[i] = thread(writeOsmAndStructure_mapIndex_levels_block_SingleSplitThreadWorker, &threadInfo[i]);
 	}
 
-	
-
 	cout << endl << "Waiting for threads...";
-	for (int i = 0; i < 4; i++) WaitForSingleObject((HANDLE)threadHandles[i], INFINITE);
+	for (int i = 0; i < 4; i++) threadHandles[i].join();
 	cout << "done";
 	//for (int i = 0; i < (totalBoxCount); i++) mapDataBlockSizes[i] = getFileSize(utf8_to_wstring(string("mapDataBlock" + to_string(i) + ".tmp")).c_str());
 
@@ -2112,11 +2145,15 @@ void writeOsmAndStructure_mapIndex_levels_block_SingleSplitThreadWorker(void *pa
 	for (int i = 0; i < ptr->rectanglesCount; i++) {
 		int blockIdx = (i * 4) + ptr->threadID;
 		if (blockIdx >= ptr->rectanglesCount) break;
-		PostMessage(hwndMainWin, WM_USER_REDRAW, NULL, NULL);
+		#if defined(_WIN32)
+			PostMessage(hwndMainWin, WM_USER_REDRAW, NULL, NULL);
+		#endif
 		writeOsmAndStructure_mapIndex_levels_block(string("mapDataBlock" + to_string(blockIdx) + "_" + to_string(pid) + ".tmp"), &ptr->rectangles[blockIdx], blockIdx, ptr->dbConnection, ptr->stmt, ptr->threadID, ptr->coordinatesByteArrayPtrWithinThread, ptr->typesByteArrayPtrWithinThread, ptr->additionalTypesByteArrayPtrWithinThread, ptr->stringNamesByteArrayPtrWithinThread, ptr->mediumZoom);
 		progressCompletedRectangles.fetch_add(1, memory_order_relaxed);
-		PostMessage(hwndMainWin, WM_USER_REDRAW, NULL, NULL);
-		mapDataBlockSizes[blockIdx] = getFileSize(utf8_to_wstring(string("mapDataBlock" + to_string(blockIdx) + "_" + to_string(pid) + ".tmp")).c_str());
+		#if defined(_WIN32)
+			PostMessage(hwndMainWin, WM_USER_REDRAW, NULL, NULL);
+		#endif
+		mapDataBlockSizes[blockIdx] = getFileSize(string("mapDataBlock" + to_string(blockIdx) + "_" + to_string(pid) + ".tmp"));
 		fileSizeBE = mapDataBlockSizes[blockIdx];
 		fileSizeBE = swap_endian(fileSizeBE);
 		threadBlockCos.WriteRaw(&fileSizeBE, 4);
@@ -2494,9 +2531,9 @@ void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRec
 			}
 			sqlite3_finalize(stmt);
 			stmt = nullptr;
-			if ((typesByteArrayPtr - typesByteArrayPtrWithinThread) > 0) mapData.set_types(reinterpret_cast<const char*>(typesByteArrayPtrWithinThread), (typesByteArrayPtr - typesByteArrayPtrWithinThread));
-			if ((additionalTypesByteArrayPtr - additionalTypesByteArrayPtrWithinThread) > 0) mapData.set_additionaltypes(reinterpret_cast<const char*>(additionalTypesByteArrayPtrWithinThread), (additionalTypesByteArrayPtr - additionalTypesByteArrayPtrWithinThread));
-			if ((stringNamesByteArrayPtr - stringNamesByteArrayPtrWithinThread) > 0) mapData.set_stringnames(reinterpret_cast<const char*>(stringNamesByteArrayPtrWithinThread), (stringNamesByteArrayPtr - stringNamesByteArrayPtrWithinThread));
+			/*if ((typesByteArrayPtr - typesByteArrayPtrWithinThread) > 0)*/ mapData.set_types(reinterpret_cast<const char*>(typesByteArrayPtrWithinThread), (typesByteArrayPtr - typesByteArrayPtrWithinThread));
+			/*if ((additionalTypesByteArrayPtr - additionalTypesByteArrayPtrWithinThread) > 0)*/ mapData.set_additionaltypes(reinterpret_cast<const char*>(additionalTypesByteArrayPtrWithinThread), (additionalTypesByteArrayPtr - additionalTypesByteArrayPtrWithinThread));
+			/*if ((stringNamesByteArrayPtr - stringNamesByteArrayPtrWithinThread) > 0)*/ mapData.set_stringnames(reinterpret_cast<const char*>(stringNamesByteArrayPtrWithinThread), (stringNamesByteArrayPtr - stringNamesByteArrayPtrWithinThread));
 
 			//MapData.additionalTypes
 			//These are the low-priority machine-readable types
@@ -2623,7 +2660,7 @@ void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRec
 
 		//It would be good to alternate storing the StringTable before and after the MapData object because storing similar data together (MapData/StringTable/StringTable/MapData/MapData/etc.) can be compressed better but OsmAnd seems to expect it to be at the end or everything in every other block says "#[index] NOT FOUND"
 		mapDataBlockCos.WriteTag((OsmAnd::OBF::MapDataBlock::kStringTableFieldNumber << 3) | 2);
-		uint64_t stringTableSize = (shouldSkipBlock ? 0 : getFileSize(utf8_to_wstring(string("mapDataBlockStringTable_" + tempFilename)).c_str()));
+		uint64_t stringTableSize = (shouldSkipBlock ? 0 : getFileSize(string("mapDataBlockStringTable_" + tempFilename)));
 		//writeOBFVarint32or64BE(mapDataBlockCos, stringTableSize);
 		mapDataBlockCos.WriteVarint32(stringTableSize);
 		copyRawFileIntoCodedOutputStream(mapDataBlockCos, "mapDataBlockStringTable_" + tempFilename, stringTableSize);
@@ -2702,7 +2739,7 @@ uint64_t copyRawFileIntoCodedOutputStream(google::protobuf::io::CodedOutputStrea
 	uint64_t partialChunkSize = size % FILE_COPY_BUFFER_SIZE;
 	//cout << endl << "size=" << size << ", chunks=" << chunks << ", partialChunkSize=" << partialChunkSize;
 	uint64_t bytesWritten = 0;
-	boolean copyPartialChunk = partialChunkSize > 0;
+	bool copyPartialChunk = partialChunkSize > 0;
 	ifstream input(filename, ios::binary);
 	for (int i = 0; i < chunks; i++) {
 		input.read((char*)fileCopyBuffer, FILE_COPY_BUFFER_SIZE);
@@ -2724,7 +2761,7 @@ void copyRawInputStreamIntoCodedOutputStream(google::protobuf::io::CodedOutputSt
 	uint64_t partialChunkSize = size % FILE_COPY_BUFFER_SIZE;
 	//cout << endl << "size=" << size << ", chunks=" << chunks << ", partialChunkSize=" << partialChunkSize;
 	uint64_t bytesWritten = 0;
-	boolean copyPartialChunk = partialChunkSize > 0;
+	bool copyPartialChunk = partialChunkSize > 0;
 	for (int i = 0; i < chunks; i++) {
 		inputFile->read((char*)fileCopyBuffer, FILE_COPY_BUFFER_SIZE);
 		cos.WriteRaw(fileCopyBuffer, FILE_COPY_BUFFER_SIZE);
@@ -2757,13 +2794,8 @@ string humanReadableTimeFromSeconds(unsigned int seconds) {
 	return retVal;
 }
 
-__int64 getFileSize(const wchar_t* name) {
-	WIN32_FILE_ATTRIBUTE_DATA fad;
-	if (!GetFileAttributesEx(name, GetFileExInfoStandard, &fad)) return -1;
-	LARGE_INTEGER size;
-	size.HighPart = fad.nFileSizeHigh;
-	size.LowPart = fad.nFileSizeLow;
-	return size.QuadPart;
+static inline int64_t getFileSize(string name) {
+	return filesystem::file_size(filesystem::path(name));
 }
 
 //Copied from user 毕晓峰 on StackOverflow
@@ -2797,24 +2829,8 @@ void writeOBFVarint32or64BE(google::protobuf::io::CodedOutputStream &i, uint64_t
 	}
 }
 
-uint64_t GetSystemTimeAsUnixTime() {
-	//Get the number of milliseconds since January 1, 1970 12:00am UTC
-	//Code released into public domain; no attribution required.
-
-	const uint64_t UNIX_TIME_START = 0x019DB1DED53E8000; //January 1, 1970 (start of Unix epoch) in "ticks"
-	//const uint64_t TICKS_PER_SECOND = 10000000; //a tick is 100ns
-
-	FILETIME ft;
-	GetSystemTimeAsFileTime(&ft); //returns ticks in UTC
-
-	//Copy the low and high parts of FILETIME into a LARGE_INTEGER
-	//This is so we can access the full 64-bits as an Int64 without causing an alignment fault
-	LARGE_INTEGER li;
-	li.LowPart = ft.dwLowDateTime;
-	li.HighPart = ft.dwHighDateTime;
-
-	//Convert ticks since 1/1/1970 into seconds
-	return (li.QuadPart - UNIX_TIME_START) / 10000.0;// TICKS_PER_SECOND;
+static inline uint64_t GetSystemTimeAsUnixTime() {
+	return (uint64_t)(chrono::duration_cast<chrono::milliseconds>(chrono::system_clock::now().time_since_epoch()).count());
 }
 
 double int32ToLatitude(uint64_t in, uint32_t zoom) {

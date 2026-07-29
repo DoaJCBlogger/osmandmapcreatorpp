@@ -15,11 +15,27 @@ OsmAndMapCreator++ is an unofficial utility that generates OsmAnd OBF maps from 
 
 ![Screenshot 2](docs/screenshot2.webp)
 
-#### How to build
+![Screenshot 3](docs/screenshot3.webp)
+
+#### How to build on Windows
 1. Install Visual Studio 2017 with the C++ build tools
 2. Make sure clang-cl.exe is in your PATH
 3. Open the "x64 Native Tools Command Prompt for VS 2017" and change to the repo folder
 4. Run **build_clang_x64[_faster].bat** (the faster one only builds main.c)
+
+#### How to build on Debian 13
+Install the build environment
+```
+bash -c "$(wget -O - https://apt.llvm.org/llvm.sh)"
+sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-22 100
+sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-22 100
+sudo apt install libgtk-4-dev libprotobuf-dev
+```
+
+Build the program
+```
+./build[_faster].sh
+```
 
 #### Known issues
 - Ways don't touch perfectly on the vector map. I believe this is caused by rounding errors since coordinates are stored as deltas with a granularity of 32 (the lower 5 bits are discarded)

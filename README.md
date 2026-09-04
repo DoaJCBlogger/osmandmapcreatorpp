@@ -38,6 +38,5 @@ Build the program
 ```
 
 #### Known issues
-- Ways don't touch perfectly on the vector map. I believe this is caused by rounding errors since coordinates are stored as deltas with a granularity of 32 (the lower 5 bits are discarded)
 - The bounding boxes probably need to be extended to overlap more
 - Add route and address indexes (currently it only generates vector maps)

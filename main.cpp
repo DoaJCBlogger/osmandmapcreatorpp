@@ -91,7 +91,7 @@ static const string KEY_BLACKLIST = "key NOT LIKE 'tiger%' AND key NOT LIKE 'sou
 static unordered_map<string, uint32_t> keyMap;
 
 static inline uint32_t getSInt32FromInt32(int32_t i) {
-	return (abs(i) << 1) | (i < 0 ? 1 : 0);
+    return (static_cast<uint32_t>(i) << 1) ^ static_cast<uint32_t>(i >> 31);
 }
 
 unsigned int getClosestNextLowerPowerOf2(unsigned int i) {
@@ -275,7 +275,7 @@ bool foundInputFilenameArgument = false;
 bool foundOutputFilenameArgument = false;
 
 int main(int argc, char** argv) {
-	cout << "OsmAndMapCreator++ v0.1.10" << endl;
+	cout << "OsmAndMapCreator++ v0.1.11" << endl;
 	#if defined(_WIN32)
 		pid = GetCurrentProcessId();
 	#elif defined(__linux__)
@@ -784,7 +784,7 @@ void calculateTotalRectanglesForGUI() {
 #endif
 
 void printHelp() {
-	cout << "OsmAndMapCreator++ version 0.1.10";
+	cout << "OsmAndMapCreator++ version 0.1.11";
 	cout << endl << endl << "This utility generates OBF map files for OsmAnd from an OpenStreetMap SQLite database";
 	cout << endl << endl << "Usage:";
 	cout << endl << "\t-i [path]\t\t\t\tInput filename (required)";
@@ -1684,7 +1684,7 @@ void writeOsmAndStructure_mapIndex_detailed_level_4_4_4_pow2_split(int pow2, boo
 			quadtreeLevel1Rectangles[(quadtreeLevel1Y * 2) + quadtreeLevel1X].topInt32 = (overallBoundingRectangle.topInt32 + (quadtreeLevel1Y * (overallBoundingRectangle.heightInt32 / 2))) & 0xffffffe0;
 			quadtreeLevel1Rectangles[(quadtreeLevel1Y * 2) + quadtreeLevel1X].bottomInt32 = (overallBoundingRectangle.topInt32 + ((quadtreeLevel1Y + 1) * (overallBoundingRectangle.heightInt32 / 2))) & 0xffffffe0;
 			quadtreeLevel1Rectangles[(quadtreeLevel1Y * 2) + quadtreeLevel1X].calculateDoubleValuesFromInt32();
-			quadtreeLevel1Rectangles[(quadtreeLevel1Y * 2) + quadtreeLevel1X].expandByAbsoluteValue(8000);
+			quadtreeLevel1Rectangles[(quadtreeLevel1Y * 2) + quadtreeLevel1X].expandByAbsoluteValue(2000);
 			quadtreeLevel1Rectangles[(quadtreeLevel1Y * 2) + quadtreeLevel1X].calculateMapDataBoxBytesSizeWithoutTagAndFixed32Size(&overallBoundingRectangle);
 			quadtreeLevel1Rectangles[(quadtreeLevel1Y * 2) + quadtreeLevel1X].MapDataBoxBytesSizeWithoutTagAndFixed32Size -= (1 + 4); //Quadtree boxes don't have shiftToMapData
 			//if (verbose) cout << endl << "Quadtree level 1 rectangle " << (((quadtreeLevel1Y * 2) + quadtreeLevel1X) + 1) << ": " << quadtreeLevel1Rectangles[(quadtreeLevel1Y * 2) + quadtreeLevel1X].left << ", " << quadtreeLevel1Rectangles[(quadtreeLevel1Y * 2) + quadtreeLevel1X].right << ", " << quadtreeLevel1Rectangles[(quadtreeLevel1Y * 2) + quadtreeLevel1X].bottom << ", " << quadtreeLevel1Rectangles[(quadtreeLevel1Y * 2) + quadtreeLevel1X].top;
@@ -1697,7 +1697,7 @@ void writeOsmAndStructure_mapIndex_detailed_level_4_4_4_pow2_split(int pow2, boo
 					quadtreeLevel2Rectangles[(((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + (quadtreeLevel2Y * 2) + quadtreeLevel2X].topInt32 = (quadtreeLevel1Rectangles[(quadtreeLevel1Y * 2) + quadtreeLevel1X].topInt32 + (quadtreeLevel2Y * (quadtreeLevel1Rectangles[(quadtreeLevel1Y * 2) + quadtreeLevel1X].heightInt32 / 2))) & 0xffffffe0;
 					quadtreeLevel2Rectangles[(((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + (quadtreeLevel2Y * 2) + quadtreeLevel2X].bottomInt32 = (quadtreeLevel1Rectangles[(quadtreeLevel1Y * 2) + quadtreeLevel1X].topInt32 + ((quadtreeLevel2Y + 1) * (quadtreeLevel1Rectangles[(quadtreeLevel1Y * 2) + quadtreeLevel1X].heightInt32 / 2))) & 0xffffffe0;
 					quadtreeLevel2Rectangles[(((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + (quadtreeLevel2Y * 2) + quadtreeLevel2X].calculateDoubleValuesFromInt32();
-					quadtreeLevel2Rectangles[(((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + (quadtreeLevel2Y * 2) + quadtreeLevel2X].expandByAbsoluteValue(8000);
+					quadtreeLevel2Rectangles[(((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + (quadtreeLevel2Y * 2) + quadtreeLevel2X].expandByAbsoluteValue(2000);
 					quadtreeLevel2Rectangles[(((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + (quadtreeLevel2Y * 2) + quadtreeLevel2X].calculateMapDataBoxBytesSizeWithoutTagAndFixed32Size(&(quadtreeLevel1Rectangles[(quadtreeLevel1Y * 2) + quadtreeLevel1X]));
 					quadtreeLevel2Rectangles[(((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + (quadtreeLevel2Y * 2) + quadtreeLevel2X].MapDataBoxBytesSizeWithoutTagAndFixed32Size -= (1 + 4);
 					//if (verbose) cout << endl << "\tQuadtree level 2 rectangle " << (((quadtreeLevel2Y * 2) + quadtreeLevel2X) + 1) << " (overall quadtree index " << ((((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + (quadtreeLevel2Y * 2) + quadtreeLevel2X) << "): " << quadtreeLevel2Rectangles[(((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + (quadtreeLevel2Y * 2) + quadtreeLevel2X].left << ", " << quadtreeLevel2Rectangles[(((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + (quadtreeLevel2Y * 2) + quadtreeLevel2X].right << ", " << quadtreeLevel2Rectangles[(((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + (quadtreeLevel2Y * 2) + quadtreeLevel2X].bottom << ", " << quadtreeLevel2Rectangles[(((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + (quadtreeLevel2Y * 2) + quadtreeLevel2X].top;
@@ -1709,7 +1709,7 @@ void writeOsmAndStructure_mapIndex_detailed_level_4_4_4_pow2_split(int pow2, boo
 							quadtreeLevel3Rectangles[(((((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + ((quadtreeLevel2Y * 2) + quadtreeLevel2X)) * 4) + ((quadtreeLevel3Y * 2) + quadtreeLevel3X)].topInt32 = (quadtreeLevel2Rectangles[(((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + (quadtreeLevel2Y * 2) + quadtreeLevel2X].topInt32 + (quadtreeLevel3Y * (quadtreeLevel2Rectangles[(((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + (quadtreeLevel2Y * 2) + quadtreeLevel2X].heightInt32 / 2))) & 0xffffffe0;
 							quadtreeLevel3Rectangles[(((((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + ((quadtreeLevel2Y * 2) + quadtreeLevel2X)) * 4) + ((quadtreeLevel3Y * 2) + quadtreeLevel3X)].bottomInt32 = (quadtreeLevel2Rectangles[(((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + (quadtreeLevel2Y * 2) + quadtreeLevel2X].topInt32 + ((quadtreeLevel3Y + 1) * (quadtreeLevel2Rectangles[(((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + (quadtreeLevel2Y * 2) + quadtreeLevel2X].heightInt32 / 2))) & 0xffffffe0;
 							quadtreeLevel3Rectangles[(((((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + ((quadtreeLevel2Y * 2) + quadtreeLevel2X)) * 4) + ((quadtreeLevel3Y * 2) + quadtreeLevel3X)].calculateDoubleValuesFromInt32();
-							quadtreeLevel3Rectangles[(((((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + ((quadtreeLevel2Y * 2) + quadtreeLevel2X)) * 4) + ((quadtreeLevel3Y * 2) + quadtreeLevel3X)].expandByAbsoluteValue(8000);
+							quadtreeLevel3Rectangles[(((((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + ((quadtreeLevel2Y * 2) + quadtreeLevel2X)) * 4) + ((quadtreeLevel3Y * 2) + quadtreeLevel3X)].expandByAbsoluteValue(2000);
 							quadtreeLevel3Rectangles[(((((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + ((quadtreeLevel2Y * 2) + quadtreeLevel2X)) * 4) + ((quadtreeLevel3Y * 2) + quadtreeLevel3X)].calculateMapDataBoxBytesSizeWithoutTagAndFixed32Size(&(quadtreeLevel2Rectangles[(((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + (quadtreeLevel2Y * 2) + quadtreeLevel2X]));
 							quadtreeLevel3Rectangles[(((((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + ((quadtreeLevel2Y * 2) + quadtreeLevel2X)) * 4) + ((quadtreeLevel3Y * 2) + quadtreeLevel3X)].MapDataBoxBytesSizeWithoutTagAndFixed32Size -= (1 + 4);
 							//if (verbose) cout << endl << "\t\tQuadtree level 3 rectangle " << (((quadtreeLevel3Y * 2) + quadtreeLevel3X) + 1) << " (overall quadtree index " << ((((((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + ((quadtreeLevel2Y * 2) + quadtreeLevel2X)) * 4) + ((quadtreeLevel3Y * 2) + quadtreeLevel3X)) << "): " << quadtreeLevel3Rectangles[(((((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + ((quadtreeLevel2Y * 2) + quadtreeLevel2X)) * 4) + ((quadtreeLevel3Y * 2) + quadtreeLevel3X)].left << ", " << quadtreeLevel3Rectangles[(((((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + ((quadtreeLevel2Y * 2) + quadtreeLevel2X)) * 4) + ((quadtreeLevel3Y * 2) + quadtreeLevel3X)].right << ", " << quadtreeLevel3Rectangles[(((((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + ((quadtreeLevel2Y * 2) + quadtreeLevel2X)) * 4) + ((quadtreeLevel3Y * 2) + quadtreeLevel3X)].bottom << ", " << quadtreeLevel3Rectangles[(((((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + ((quadtreeLevel2Y * 2) + quadtreeLevel2X)) * 4) + ((quadtreeLevel3Y * 2) + quadtreeLevel3X)].top;
@@ -1721,7 +1721,7 @@ void writeOsmAndStructure_mapIndex_detailed_level_4_4_4_pow2_split(int pow2, boo
 									rectangles[(((((((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + ((quadtreeLevel2Y * 2) + quadtreeLevel2X)) * 4) + ((quadtreeLevel3Y * 2) + quadtreeLevel3X)) * (splitSectionCount * splitSectionCount)) + ((j * splitSectionCount) + i)].topInt32 = (quadtreeLevel3Rectangles[(((((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + ((quadtreeLevel2Y * 2) + quadtreeLevel2X)) * 4) + ((quadtreeLevel3Y * 2) + quadtreeLevel3X)].topInt32 + (j * singleBoxHeight));
 									rectangles[(((((((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + ((quadtreeLevel2Y * 2) + quadtreeLevel2X)) * 4) + ((quadtreeLevel3Y * 2) + quadtreeLevel3X)) * (splitSectionCount * splitSectionCount)) + ((j * splitSectionCount) + i)].bottomInt32 = (rectangles[(((((((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + ((quadtreeLevel2Y * 2) + quadtreeLevel2X)) * 4) + ((quadtreeLevel3Y * 2) + quadtreeLevel3X)) * (splitSectionCount * splitSectionCount)) + ((j * splitSectionCount) + i)].topInt32 + singleBoxHeight);
 									rectangles[(((((((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + ((quadtreeLevel2Y * 2) + quadtreeLevel2X)) * 4) + ((quadtreeLevel3Y * 2) + quadtreeLevel3X)) * (splitSectionCount * splitSectionCount)) + ((j * splitSectionCount) + i)].calculateDoubleValuesFromInt32();
-									rectangles[(((((((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + ((quadtreeLevel2Y * 2) + quadtreeLevel2X)) * 4) + ((quadtreeLevel3Y * 2) + quadtreeLevel3X)) * (splitSectionCount * splitSectionCount)) + ((j * splitSectionCount) + i)].expandByAbsoluteValue(8000);
+									rectangles[(((((((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + ((quadtreeLevel2Y * 2) + quadtreeLevel2X)) * 4) + ((quadtreeLevel3Y * 2) + quadtreeLevel3X)) * (splitSectionCount * splitSectionCount)) + ((j * splitSectionCount) + i)].expandByAbsoluteValue(2000);
 									rectangles[(((((((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + ((quadtreeLevel2Y * 2) + quadtreeLevel2X)) * 4) + ((quadtreeLevel3Y * 2) + quadtreeLevel3X)) * (splitSectionCount * splitSectionCount)) + ((j * splitSectionCount) + i)].calculateMapDataBoxBytesSizeWithoutTagAndFixed32Size(&(quadtreeLevel3Rectangles[(((((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + ((quadtreeLevel2Y * 2) + quadtreeLevel2X)) * 4) + ((quadtreeLevel3Y * 2) + quadtreeLevel3X)]));
 									//cout << endl << "\t\t\tRectangle " << ((((((((quadtreeLevel1Y * 2) + quadtreeLevel1X) * 4) + ((quadtreeLevel2Y * 2) + quadtreeLevel2X)) * 4) + ((quadtreeLevel3Y * 2) + quadtreeLevel3X)) * (splitSectionCount * splitSectionCount)) + ((j * splitSectionCount) + i));
 								}
@@ -2352,8 +2352,8 @@ void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRec
 			while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
 				way_id = sqlite3_column_int64(stmt, 0);
 				nodeIDVector.emplace_back(sqlite3_column_int64(stmt, 1));
-				latVector.emplace_back(latitudeToInt32(sqlite3_column_double(stmt, 3), 21, true));
-				lonVector.emplace_back(longitudeToInt32(sqlite3_column_double(stmt, 4), 21, true));
+				latVector.emplace_back(latitudeToInt32(sqlite3_column_double(stmt, 3), 21));
+				lonVector.emplace_back(longitudeToInt32(sqlite3_column_double(stmt, 4), 21));
 
 				if (sqlite3_column_int64(stmt, 5) /* index_within_way */ == 1) {
 					nodesWithinWay = sqlite3_column_int64(stmt, 6);
@@ -2382,76 +2382,22 @@ void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRec
 					firstNodeID = node_id;
 
 					//The delta is based on the top-left point of the bounding box
-					deltaLat = (((lat - rectangle->topInt32) >> 5) << 5);
-					/*if (deltaLat < 0) {
-						if (((lat - rectangle->topInt32) & 0x1f) > 17) deltaLat -= 32;
-					} else if (deltaLat > 0) {
-						if (((lat - rectangle->topInt32) & 0x1f) > 17) deltaLat += 32;
-					}*/
-					prevLatInt32 = rectangle->topInt32 + deltaLat;
-					deltaLon = (((lon - rectangle->leftInt32) >> 5) << 5);
-					/*if (deltaLon < 0) {
-						if (((lon - rectangle->leftInt32) & 0x1f) > 17) deltaLon -= 32;
-					} else if (deltaLon > 0) {
-						if (((lon - rectangle->leftInt32) & 0x1f) > 17) deltaLon += 32;
-					}*/
-					prevLonInt32 = rectangle->leftInt32 + deltaLon;
+					deltaLat = ((int64_t)lat) - ((int64_t)rectangle->topInt32);
+					prevLatInt32 = lat;
+					deltaLon = ((int64_t)lon) - ((int64_t)rectangle->leftInt32);
+					prevLonInt32 = lon;
 				} else {
 					//The delta is based on the previous node
 					//Keep track of all the previous deltas by adding the rounded ones so we can base the current one on that instead of the accurate values
-					deltaLat = (lat - prevLatInt32);
-					/*if (deltaLat < 0) {
-						if ((abs((int64_t)(lat - prevLatInt32)) & 0x1f) > 16) deltaLat += 32;
-					} else if (deltaLat > 0) {
-						if ((abs((int64_t)(lat - prevLatInt32)) & 0x1f) > 16) deltaLat -= 32;
-					}*/
-					deltaLon = (lon - prevLonInt32);
-					/*if (deltaLon < 0) {
-						if (((lon - prevLonInt32) & 0x1f) > 16) deltaLon -= 32;
-					} else if (deltaLon > 0) {
-						if (((lon - prevLonInt32) & 0x1f) > 16) deltaLon += 32;
-					}*/
-					if (deltaLat < 0 && abs(deltaLat) >= 4) latRoundingError += 32;
-					if (deltaLon < 0 && abs(deltaLon) >= 4) lonRoundingError += 32;
-					deltaLat = ((deltaLat >> 5) << 5);
-					deltaLon = ((deltaLon >> 5) << 5);
-					
-					prevLatInt32 += deltaLat;
-					prevLonInt32 += deltaLon;
+					deltaLat = ((int64_t)lat) - ((int64_t)prevLatInt32);
+					deltaLon = ((int64_t)lon) - ((int64_t)prevLonInt32);
+					prevLatInt32 = lat;
+					prevLonInt32 = lon;
 				}
 				//cout << endl << "way deltaLat=" << deltaLat << " (lower 5 bits=" << (deltaLat & 0x1f) << "), deltaLon=" << deltaLon << " (lower 5 bits=" << (deltaLon & 0x1f) << ")" << endl;
 				//If this is the last node in the way, see if adding or subtracting 32 makes the end node coordinates more accurate
 				if (index_within_way == nodesWithinWay) {
-					/*int64_t valueWithDeltaPlus32, valueWithDeltaMinus32, plus32Difference, minus32Difference, currentDifference, min3_value;
-					valueWithDeltaPlus32 = prevLatInt32 + 32;
-					valueWithDeltaMinus32 = prevLatInt32 - 32;
-					plus32Difference = latitudeToInt32(lat, 21) - valueWithDeltaPlus32;
-					minus32Difference = latitudeToInt32(lat, 21) - valueWithDeltaMinus32;
-					currentDifference = latitudeToInt32(lat, 21) - prevLatInt32;
-					min3_value = min3(abs(plus32Difference), abs(minus32Difference), abs(currentDifference));
-					if (plus32Difference == min3_value) {
-						deltaLat += 32;
-					}
-					else if (minus32Difference == min3_value) {
-						deltaLat -= 32;
-					}
-
-					valueWithDeltaPlus32 = prevLonInt32 + 32;
-					valueWithDeltaMinus32 = prevLonInt32 - 32;
-					plus32Difference = longitudeToInt32(lon, 21) - valueWithDeltaPlus32;
-					minus32Difference = longitudeToInt32(lon, 21) - valueWithDeltaMinus32;
-					currentDifference = longitudeToInt32(lon, 21) - prevLonInt32;
-					min3_value = min3(plus32Difference, minus32Difference, currentDifference);
-					if (plus32Difference == min3_value) {
-						deltaLon += 32;
-					}
-					else if (minus32Difference == min3_value) {
-						deltaLon -= 32;
-					}*/
-
 					isArea = firstNodeID == node_id;
-					deltaLat += latRoundingError;
-					deltaLon += lonRoundingError;
 				}
 				//cout << endl << "deltaX=" << ((deltaLon >> 5) << 5) << ", deltaY=" << ((deltaLat >> 5) << 5);
 				//Write the delta values as sint32
@@ -2459,12 +2405,9 @@ void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRec
 				deltaLon >>= 5;
 				uint64_t sint32;
 				//X (longitude)
-				//sint32 = (abs(deltaLon) << 1) | (deltaLon < 0 ? 1 : 0);
 				coordinatesByteArrayPtr = google::protobuf::io::CodedOutputStream::WriteVarint32ToArray(getSInt32FromInt32(deltaLon), coordinatesByteArrayPtr);
 				//Y (latitude)
-				//sint32 = (abs(deltaLat) << 1) | (deltaLat < 0 ? 1 : 0);
 				coordinatesByteArrayPtr = google::protobuf::io::CodedOutputStream::WriteVarint32ToArray(getSInt32FromInt32(deltaLat), coordinatesByteArrayPtr);
-				//coordinatesCount++;
 			}
 			nodeIDVector.clear();
 			latVector.clear();

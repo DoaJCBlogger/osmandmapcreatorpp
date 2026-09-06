@@ -198,7 +198,7 @@ struct MapDataBlockThreadInfo {
 	MapDataBlockThreadInfo():tempFilename(""),rectangles(nullptr),rectanglesCount(0),rectanglesStartIdx(0),stride(0),dbConnection(nullptr),stmt(nullptr),threadID(0),coordinatesByteArrayPtrWithinThread(nullptr),typesByteArrayPtrWithinThread(nullptr),additionalTypesByteArrayPtrWithinThread(nullptr),stringNamesByteArrayPtrWithinThread(nullptr),mediumZoom(false),mapDataBlockSizes(nullptr){}
 };
 
-void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRectangle *rectangle, unsigned int blockIdx, sqlite3 *dbConnection, sqlite3_stmt *stmt, int threadID, unsigned char *coordinatesByteArrayPtrWithinThread, unsigned char *typesByteArrayPtrWithinThread, unsigned char *additionalTypesByteArrayPtrWithinThread, unsigned char *stringNamesByteArrayPtrWithinThread, bool mediumZoom);
+void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRectangle *rectangle, unsigned int blockIdx, sqlite3 *dbConnection, sqlite3_stmt *stmt, sqlite3_stmt *wayNodeStmt, sqlite3_stmt *wayTagStmt, int threadID, unsigned char *coordinatesByteArrayPtrWithinThread, unsigned char *typesByteArrayPtrWithinThread, unsigned char *additionalTypesByteArrayPtrWithinThread, unsigned char *stringNamesByteArrayPtrWithinThread, bool mediumZoom);
 
 template <typename T>
 T swap_endian(T u) {
@@ -996,7 +996,7 @@ void writeOsmAndStructure_mapIndex_detailed_level_1x1(unsigned char *coordinates
 
 	//MapRootLevel.blocks
 	mapRootLevelTempCos.WriteTag((OsmAnd::OBF::OsmAndMapIndex::MapRootLevel::kBlocksFieldNumber << 3) | 2);
-	writeOsmAndStructure_mapIndex_levels_block("mapDataBlock_" + to_string(pid), &overallBoundingRectangle, 0, db, res, 0, coordinatesByteArrayPtrWithinThread, typesByteArrayPtrWithinThread, additionalTypesByteArrayPtrWithinThread, stringNamesByteArrayPtrWithinThread, false);
+	//writeOsmAndStructure_mapIndex_levels_block("mapDataBlock_" + to_string(pid), &overallBoundingRectangle, 0, db, res, 0, coordinatesByteArrayPtrWithinThread, typesByteArrayPtrWithinThread, additionalTypesByteArrayPtrWithinThread, stringNamesByteArrayPtrWithinThread, false);
 	uint64_t mapDataBlockSize = getFileSize(string("mapDataBlock_" + to_string(pid)));
 	mapRootLevelTempCos.WriteVarint32(mapDataBlockSize);
 	copyRawFileIntoCodedOutputStream(mapRootLevelTempCos, "mapDataBlock_" + to_string(pid), mapDataBlockSize);
@@ -2137,6 +2137,26 @@ void writeOsmAndStructure_mapIndex_detailed_level_4_4_4_pow2_split(int pow2, boo
 void writeOsmAndStructure_mapIndex_levels_block_SingleSplitThreadWorker(void *param) {
 	MapDataBlockThreadInfo *ptr = (MapDataBlockThreadInfo*)param;
 	uint64_t *mapDataBlockSizes = ptr->mapDataBlockSizes;
+	sqlite3_stmt *wayNodeStmt;
+	sqlite3_stmt *wayTagStmt;
+	sqlite3_stmt *tempStmt;
+	sqlite3_stmt *waysWithinRectangleStmt;
+	char *errorMessage = 0;
+	//Get a list of all the way ID's
+	//Use the first node to see if the way should be included in the current block
+	sqlite3_exec(ptr->dbConnection, "CREATE TEMP TABLE waysWithinRectangle (way_id INTEGER PRIMARY KEY);", NULL, 0, &errorMessage);
+	if (!ptr->mediumZoom) {
+		sqlite3_prepare_v2(ptr->dbConnection, "INSERT INTO waysWithinRectangle (way_id) SELECT w.way_id FROM way_nodes w INNER JOIN rtree_node r ON r.node_id = w.node_id WHERE w.node_order = 1 AND r.max_lat >= :bottom AND r.min_lat <= :top AND r.max_lon >= :left AND r.min_lon <= :right;", -1, &waysWithinRectangleStmt, 0);
+	} else {
+		sqlite3_prepare_v2(ptr->dbConnection, "INSERT INTO waysWithinRectangle (way_id) SELECT w.way_id FROM way_nodes w INNER JOIN rtree_node r ON r.node_id = w.node_id WHERE w.node_order = 1 AND r.max_lat >= :bottom AND r.min_lat <= :top AND r.max_lon >= :left AND r.min_lon <= :right AND EXISTS (SELECT 1 FROM way_tags q3 WHERE q3.way_id = w.way_id AND ((q3.key = 'highway' AND q3.value IN ('motorway', 'motorway_link', 'motorway_junction', 'primary', 'primary_link', 'secondary', 'secondary_link', 'tertiary', 'tertiary_link', 'trunk', 'trunk_link')) OR (q3.key IN ('lanes', 'lanes:forward', 'lanes:backward', 'hgv', 'maxspeed', 'oneway', 'destination', 'motorway_link'))));", -1, &waysWithinRectangleStmt, 0);
+	}
+	sqlite3_prepare_v2(ptr->dbConnection, "select w.way_id, w.node_id, w.node_order, n.lat, n.lon, row_number() over (partition by w.way_id order by w.node_order asc) as index_within_way, count(*) over (partition by w.way_id) as total_nodes from way_nodes w inner join nodes n on n.node_id=w.node_id where w.way_id in waysWithinRectangle order by w.way_id, w.node_order asc;", -1, &wayNodeStmt, 0);
+	string wayTagsQuery = "select w1.way_id, t.key, t.value, case when t.key in (%HIGH_PRIORITY_WHITELIST%) then 0 when t.key in (%HUMAN_READABLE_WHITELIST%) then 2 else 1 end as tagType from way_tags t inner join waysWithinRectangle w1 on w1.way_id=t.way_id where %MACHINE_READABLE_BLACKLIST% group by w1.way_id, t.key, t.value order by w1.way_id asc, tagType asc, t.key asc, t.value asc;";
+	wayTagsQuery.replace(wayTagsQuery.find("%HIGH_PRIORITY_WHITELIST%"), 25, TAG_KEYS_HIGH_PRIORITY_WHITELIST);
+	wayTagsQuery.replace(wayTagsQuery.find("%HUMAN_READABLE_WHITELIST%"), 26, TAG_KEYS_HUMAN_READABLE_WHITELIST);
+	wayTagsQuery.replace(wayTagsQuery.find("%MACHINE_READABLE_BLACKLIST%"), 28, TAG_KEYS_MACHINE_READABLE_BLACKLIST);
+	//if (ptr->threadID == 0) cout << endl << "[Thread " << ptr->threadID << "] " << wayTagsQuery << endl;
+	sqlite3_prepare_v2(ptr->dbConnection, wayTagsQuery.c_str(), -1, &wayTagStmt, 0);
 	//It's better to save the MapDataBlocks to a larger temp file per-thread than separate ones because the "Size on disk" can be huge for a lot of small files
 	ofstream threadTempFile(string("thread" + to_string(ptr->threadID) + "_" + to_string(pid) + ".tmp"), ios::binary);
 	google::protobuf::io::OstreamOutputStream threadTempOstream(&threadTempFile);
@@ -2145,10 +2165,21 @@ void writeOsmAndStructure_mapIndex_levels_block_SingleSplitThreadWorker(void *pa
 	for (int i = 0; i < ptr->rectanglesCount; i++) {
 		int blockIdx = (i * 4) + ptr->threadID;
 		if (blockIdx >= ptr->rectanglesCount) break;
+
+		sqlite3_exec(ptr->dbConnection, "DELETE FROM waysWithinRectangle;", NULL, 0, &errorMessage);
+		sqlite3_reset(waysWithinRectangleStmt);
+		//cout << endl << "[Thread " << ptr->threadID << "] Line 2171" << endl;
+		sqlite3_clear_bindings(waysWithinRectangleStmt);
+		sqlite3_bind_double(waysWithinRectangleStmt, sqlite3_bind_parameter_index(waysWithinRectangleStmt, ":left"), ptr->rectangles[blockIdx].left);
+		sqlite3_bind_double(waysWithinRectangleStmt, sqlite3_bind_parameter_index(waysWithinRectangleStmt, ":right"), ptr->rectangles[blockIdx].right);
+		sqlite3_bind_double(waysWithinRectangleStmt, sqlite3_bind_parameter_index(waysWithinRectangleStmt, ":bottom"), ptr->rectangles[blockIdx].bottom);
+		sqlite3_bind_double(waysWithinRectangleStmt, sqlite3_bind_parameter_index(waysWithinRectangleStmt, ":top"), ptr->rectangles[blockIdx].top);
+		if (sqlite3_step(waysWithinRectangleStmt) != SQLITE_DONE) cout << endl << "Error while generating the temp table: " << sqlite3_errmsg(ptr->dbConnection) << endl;
+		
 		#if defined(_WIN32)
 			PostMessage(hwndMainWin, WM_USER_REDRAW, NULL, NULL);
 		#endif
-		writeOsmAndStructure_mapIndex_levels_block(string("mapDataBlock" + to_string(blockIdx) + "_" + to_string(pid) + ".tmp"), &ptr->rectangles[blockIdx], blockIdx, ptr->dbConnection, ptr->stmt, ptr->threadID, ptr->coordinatesByteArrayPtrWithinThread, ptr->typesByteArrayPtrWithinThread, ptr->additionalTypesByteArrayPtrWithinThread, ptr->stringNamesByteArrayPtrWithinThread, ptr->mediumZoom);
+		writeOsmAndStructure_mapIndex_levels_block(string("mapDataBlock" + to_string(blockIdx) + "_" + to_string(pid) + ".tmp"), &ptr->rectangles[blockIdx], blockIdx, ptr->dbConnection, ptr->stmt, wayNodeStmt, wayTagStmt, ptr->threadID, ptr->coordinatesByteArrayPtrWithinThread, ptr->typesByteArrayPtrWithinThread, ptr->additionalTypesByteArrayPtrWithinThread, ptr->stringNamesByteArrayPtrWithinThread, ptr->mediumZoom);
 		progressCompletedRectangles.fetch_add(1, memory_order_relaxed);
 		#if defined(_WIN32)
 			PostMessage(hwndMainWin, WM_USER_REDRAW, NULL, NULL);
@@ -2160,13 +2191,19 @@ void writeOsmAndStructure_mapIndex_levels_block_SingleSplitThreadWorker(void *pa
 		copyRawFileIntoCodedOutputStream(threadBlockCos, "mapDataBlock" + to_string(blockIdx) + "_" + to_string(pid) + ".tmp", mapDataBlockSizes[blockIdx]);
 		if (!shouldKeepTempFiles) remove(string("mapDataBlock" + to_string(blockIdx) + "_" + to_string(pid) + ".tmp").c_str());
 	}
+	sqlite3_exec(ptr->dbConnection, "DROP TABLE IF EXISTS temp.waysWithinRectangle;", NULL, 0, &errorMessage);
+
+	sqlite3_finalize(waysWithinRectangleStmt);
+	sqlite3_finalize(wayTagStmt);
+	sqlite3_finalize(wayNodeStmt);
 }
 
-void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRectangle *rectangle, unsigned int blockIdx, sqlite3 *dbConnection, sqlite3_stmt *stmt, int threadID, unsigned char *coordinatesByteArrayPtrWithinThread, unsigned char *typesByteArrayPtrWithinThread, unsigned char *additionalTypesByteArrayPtrWithinThread, unsigned char *stringNamesByteArrayPtrWithinThread, bool mediumZoom) {
+void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRectangle *rectangle, unsigned int blockIdx, sqlite3 *dbConnection, sqlite3_stmt *stmt, sqlite3_stmt *wayNodeStmt, sqlite3_stmt *wayTagStmt, int threadID, unsigned char *coordinatesByteArrayPtrWithinThread, unsigned char *typesByteArrayPtrWithinThread, unsigned char *additionalTypesByteArrayPtrWithinThread, unsigned char *stringNamesByteArrayPtrWithinThread, bool mediumZoom) {
 	remove(tempFilename.c_str());
 	ofstream mapDataBlockTemp(tempFilename, ios::binary);
 	google::protobuf::io::OstreamOutputStream mapDataBlockTempOstream(&mapDataBlockTemp);
 	google::protobuf::io::CodedOutputStream mapDataBlockCos(&mapDataBlockTempOstream);
+	int wayTagStmtRC = sqlite3_step(wayTagStmt);
 	
 	if (shouldShowGUI) {
 		progressBitmapPtr[(blockIdx * 4)] = 0xe0;
@@ -2284,27 +2321,6 @@ void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRec
 	mapDataBlockCos.WriteTag((OsmAnd::OBF::MapDataBlock::kBaseIdFieldNumber << 3));
 	mapDataBlockCos.WriteVarint64((medianUniqueID << 7) /*(| 3*/);
 	if (!shouldSkipBlock) {
-		//Get a list of all the way ID's
-		//Use the first node to see if the way should be included in the current block
-		if (!mediumZoom) {
-			rc = sqlite3_prepare_v2(dbConnection, "select q1.*, count(*) over () from (select distinct q1.way_id from way_nodes q1 inner join rtree_node q2 on q2.node_id=q1.node_id where q1.node_order=1 and (q2.max_lat >= :bottom and q2.min_lat <= :top) and (q2.max_lon >= :left and q2.min_lon <= :right)) q1 order by way_id asc", -1, &stmt, 0);
-		} else {
-			rc = sqlite3_prepare_v2(dbConnection, "select q1.*, count(*) over () from (select distinct q1.way_id from way_nodes q1 inner join rtree_node q2 on q2.node_id=q1.node_id inner join way_tags q3 on q3.way_id=q1.way_id where q1.node_order=1 and (q2.max_lat >= :bottom and q2.min_lat <= :top) and (q2.max_lon >= :left and q2.min_lon <= :right) and ((key = 'highway' and value in ('motorway', 'motorway_link', 'motorway_junction', 'primary', 'primary_link', 'secondary', 'secondary_link', 'tertiary', 'tertiary_link', 'trunk', 'trunk_link')) or (key in ('lanes', 'lanes:forward', 'lanes:backward', 'hgv', 'maxspeed', 'oneway', 'destination', 'motorway_link')))) q1 order by way_id asc", -1, &stmt, 0);
-		}
-		sqlite3_bind_double(stmt, sqlite3_bind_parameter_index(stmt, ":left"), rectangle->left);
-		sqlite3_bind_double(stmt, sqlite3_bind_parameter_index(stmt, ":right"), rectangle->right);
-		sqlite3_bind_double(stmt, sqlite3_bind_parameter_index(stmt, ":bottom"), rectangle->bottom);
-		sqlite3_bind_double(stmt, sqlite3_bind_parameter_index(stmt, ":top"), rectangle->top);
-		vector<uint64_t> wayIDs;
-		i = 0;
-		while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
-			if (i == 0) wayIDs.reserve(sqlite3_column_int64(stmt, 1));
-			wayIDs.emplace_back((uint64_t)sqlite3_column_int64(stmt, 0));
-			i++;
-		}
-		sqlite3_finalize(stmt);
-		stmt = nullptr;
-
 		//MapDataBlock.dataObjects
 		OsmAnd::OBF::MapData mapData;
 		uint64_t way_id, node_id, firstNodeID, node_order, index_within_way;
@@ -2322,46 +2338,41 @@ void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRec
 
 		//Ways
 		uint64_t wayIDIndex = 0;
-		int64_t latRoundingError, lonRoundingError;
 		vector<uint64_t> nodeIDVector;
 		vector<uint64_t> latVector;
 		vector<uint64_t> lonVector;
 		nodeIDVector.reserve(2048); //Pre-allocate memory for up to 2048 elements. As of 2026/07/06, the longest way in the southeast US data has 1978 nodes
 		latVector.reserve(2048);
 		lonVector.reserve(2048);
-		for (uint64_t wayID : wayIDs) {
-			lonRoundingError = 0;
-			latRoundingError = 0;
-			if (verbose) {
+		bool shouldStopIteratingOverWays = false;
+		while (!shouldStopIteratingOverWays) {
+			/*if (verbose) {
 				if (wayIDIndex == 0) cout << endl;
 				if ((wayIDs.size() < 1000 || wayIDIndex % 99 == 0)) {
 					cout << "\rWriting way " << (wayIDIndex + 1) << "/" << wayIDs.size() << " (" << ((wayIDIndex + 1) * 100.0) / wayIDs.size() << "%)";
 				}
-			}
-			string queryGetWayNodes = "select q1.*, row_number() over (partition by q1.way_id order by way_id asc, node_order asc) as index_within_way, count(*) over () as total_nodes from (select way_id, q1.node_id, node_order, lat, lon from way_nodes q1 left join nodes q2 on q1.node_id=q2.node_id) q1 WHERE lat is not null AND lon is not null and way_id=%WAY_ID% order by way_id asc, node_order asc";
-			queryGetWayNodes.replace(queryGetWayNodes.find("%WAY_ID%"), 8, to_string(wayID));
-			rc = sqlite3_prepare_v2(dbConnection, queryGetWayNodes.c_str(), -1, &stmt, 0);
+			}*/
 			coordinatesByteLength = 0;
 			coordinatesCount = 0;
 			coordinatesByteArrayPtr = coordinatesByteArrayPtrWithinThread;
 			typesByteArrayPtr = typesByteArrayPtrWithinThread;
 			additionalTypesByteArrayPtr = additionalTypesByteArrayPtrWithinThread;
-			latRoundingError = 0;
-			lonRoundingError = 0;
 			isArea = false;
-			while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
-				way_id = sqlite3_column_int64(stmt, 0);
-				nodeIDVector.emplace_back(sqlite3_column_int64(stmt, 1));
-				latVector.emplace_back(latitudeToInt32(sqlite3_column_double(stmt, 3), 21));
-				lonVector.emplace_back(longitudeToInt32(sqlite3_column_double(stmt, 4), 21));
+			
+			while ((rc = sqlite3_step(wayNodeStmt)) == SQLITE_ROW) {
+				way_id = sqlite3_column_int64(wayNodeStmt, 0);
+				nodeIDVector.emplace_back(sqlite3_column_int64(wayNodeStmt, 1));
+				latVector.emplace_back(latitudeToInt32(sqlite3_column_double(wayNodeStmt, 3), 21));
+				lonVector.emplace_back(longitudeToInt32(sqlite3_column_double(wayNodeStmt, 4), 21));
 
-				if (sqlite3_column_int64(stmt, 5) /* index_within_way */ == 1) {
-					nodesWithinWay = sqlite3_column_int64(stmt, 6);
+				if (sqlite3_column_int64(wayNodeStmt, 5) /* index_within_way */ == 1) {
+					nodesWithinWay = sqlite3_column_int64(wayNodeStmt, 6);
 					firstNodeID = node_id;
 				}
+
+				if (sqlite3_column_int64(wayNodeStmt, 5) /* index_within_way */ == sqlite3_column_int64(wayNodeStmt, 6) /* total_nodes */) break;
 			}
-			sqlite3_finalize(stmt);
-			stmt = nullptr;
+			if (rc != SQLITE_ROW) shouldStopIteratingOverWays = true;
 
 			if (mediumZoom) VWSimplify(&nodeIDVector, &latVector, &lonVector, 40000000);
 
@@ -2422,13 +2433,7 @@ void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRec
 
 			//Write the tags
 
-			string wayTagsQuery = QUERY_GET_WAY_TAGS;
-			wayTagsQuery.replace(wayTagsQuery.find("%HIGH_PRIORITY_WHITELIST%"), 25, TAG_KEYS_HIGH_PRIORITY_WHITELIST);
-			wayTagsQuery.replace(wayTagsQuery.find("%HUMAN_READABLE_WHITELIST%"), 26, TAG_KEYS_HUMAN_READABLE_WHITELIST);
-			wayTagsQuery.replace(wayTagsQuery.find("%MACHINE_READABLE_BLACKLIST%"), 28, TAG_KEYS_MACHINE_READABLE_BLACKLIST);
-			wayTagsQuery.replace(wayTagsQuery.find("%WAY_ID%"), 8, string("and way_id=" + to_string(way_id)));
 			//cout << endl << wayTagsQuery;
-			rc = sqlite3_prepare_v2(dbConnection, wayTagsQuery.c_str(), -1, &stmt, 0);
 			//cout << endl << "Way tags query " << wayTagsQuery;
 			//string tag = "";
 			string key = "";
@@ -2439,13 +2444,14 @@ void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRec
 			bool highPriority = false;
 			bool finishedWritingHighPriorityTags = false;
 			bool finishedWritingLowPriorityTags = false;
-			while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+			while (wayTagStmtRC == SQLITE_ROW) {
+				if (sqlite3_column_int64(wayTagStmt, 0) != way_id) break;
 				//tag = (char*)sqlite3_column_text(res, 0);
-				key = (char*)sqlite3_column_text(stmt, 0);
-				value = (char*)sqlite3_column_text(stmt, 1);
+				key = (char*)sqlite3_column_text(wayTagStmt, 1);
+				value = (char*)sqlite3_column_text(wayTagStmt, 2);
 				//cout << endl << "tag=\"" << tag << "\"";
 
-				switch (sqlite3_column_int64(stmt, 2) /* tagType */) {
+				switch (sqlite3_column_int64(wayTagStmt, 3) /* tagType */) {
 					case 0: //high_priority machine-readable tags for the "types" array
 						{
 							//MapData.types
@@ -2471,9 +2477,9 @@ void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRec
 							break;
 						}
 				}
+
+				wayTagStmtRC = sqlite3_step(wayTagStmt);
 			}
-			sqlite3_finalize(stmt);
-			stmt = nullptr;
 			/*if ((typesByteArrayPtr - typesByteArrayPtrWithinThread) > 0)*/ mapData.set_types(reinterpret_cast<const char*>(typesByteArrayPtrWithinThread), (typesByteArrayPtr - typesByteArrayPtrWithinThread));
 			/*if ((additionalTypesByteArrayPtr - additionalTypesByteArrayPtrWithinThread) > 0)*/ mapData.set_additionaltypes(reinterpret_cast<const char*>(additionalTypesByteArrayPtrWithinThread), (additionalTypesByteArrayPtr - additionalTypesByteArrayPtrWithinThread));
 			/*if ((stringNamesByteArrayPtr - stringNamesByteArrayPtrWithinThread) > 0)*/ mapData.set_stringnames(reinterpret_cast<const char*>(stringNamesByteArrayPtrWithinThread), (stringNamesByteArrayPtr - stringNamesByteArrayPtrWithinThread));
@@ -2490,9 +2496,9 @@ void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRec
 			wayIDIndex++;
 		}
 		//sqlite3_finalize(res);
-		if (verbose) cout << "\rWriting way " << wayIDs.size() << "/" << wayIDs.size() << " (100%)                                        " << endl;
+		/*if (verbose) cout << "\rWriting way " << wayIDs.size() << "/" << wayIDs.size() << " (100%)                                        " << endl;
 		wayIDs.clear();
-		wayIDs.shrink_to_fit();
+		wayIDs.shrink_to_fit();*/
 
 		//Nodes
 		uint64_t nodeIDIndex = 0;
@@ -2550,13 +2556,10 @@ void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRec
 
 				deltaLat >>= 5;
 				deltaLon >>= 5;
-				uint64_t sint32;
 				//X (longitude)
-				sint32 = (abs(deltaLon) << 1) | (deltaLon < 0 ? 1 : 0);
-				coordinatesByteArrayPtr = google::protobuf::io::CodedOutputStream::WriteVarint32ToArray(sint32, coordinatesByteArrayPtr);
+				coordinatesByteArrayPtr = google::protobuf::io::CodedOutputStream::WriteVarint32ToArray(getSInt32FromInt32(deltaLon), coordinatesByteArrayPtr);
 				//Y (latitude)
-				sint32 = (abs(deltaLat) << 1) | (deltaLat < 0 ? 1 : 0);
-				coordinatesByteArrayPtr = google::protobuf::io::CodedOutputStream::WriteVarint32ToArray(sint32, coordinatesByteArrayPtr);
+				coordinatesByteArrayPtr = google::protobuf::io::CodedOutputStream::WriteVarint32ToArray(getSInt32FromInt32(deltaLat), coordinatesByteArrayPtr);
 
 				//MapData.coordinates
 				mapData.set_coordinates(reinterpret_cast<const char*>(coordinatesByteArrayPtrWithinThread), (coordinatesByteArrayPtr - coordinatesByteArrayPtrWithinThread));

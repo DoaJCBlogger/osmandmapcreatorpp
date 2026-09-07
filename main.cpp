@@ -78,7 +78,7 @@ unsigned char *fileCopyBuffer = nullptr;
 static const char* GET_KEYS_AND_VALUES_SORTED_QUERY = "SELECT key, value, (key in (%HUMAN_READABLE_WHITELIST%) or key like 'addr:%') as human_readable, COUNT(*) p, COUNT(*) OVER () AS total_rows FROM (SELECT key, value FROM node_tags WHERE %MACHINE_READABLE_BLACKLIST% UNION ALL SELECT key, value FROM way_tags WHERE %MACHINE_READABLE_BLACKLIST%) q1 GROUP BY concat(key, \"=\", value) ORDER BY p DESC;";
 static const char* GET_WAY_AND_NODE_KEYS_SORTED_QUERY_BLACKLIST = "select key, count(key) as p, way from (select q1.*, 1 as way from way_tags q1 union all select q2.*, 0 as way from node_tags q2) where key not like 'tiger%' and key not like 'source%' and key not like 'attribution%' and key not like 'nhd%' and key not like 'power%' and key not like 'created_by%' and key not like 'seamark%' and key not like 'gnis%' and key not like 'fid%' and key not like 'fixme%' and key not like 'roof%' group by key order by p desc;";
 static const char* QUERY_GET_UNIQUE_WAY_AND_NODE_TAG_VALUES_BLACKLIST = "select value, count(*) as p, way, count(*) over () as total from (select q1.value, 1 as way from way_tags q1 inner join way_nodes q4 on q4.way_id=q1.way_id and q4.node_order=1 inner join rtree_node q5 on q5.node_id=q4.node_id and q5.max_lat >= :bottom and q5.min_lat <= :top and q5.max_lon >= :left and q5.min_lon <= :right where q1.key not like 'tiger%' and q1.key not like 'source%' and q1.key not like 'attribution%' and q1.key not like 'nhd%' and q1.key not like 'power%' and q1.key not like 'created_by%' and q1.key not like 'seamark%' and q1.key not like 'gnis%' and q1.key not like 'fid%' and q1.key not like 'fixme%' and q1.key not like 'roof%' union all select q2.value, 0 as way from node_tags q2 inner join rtree_node q3 on q3.node_id=q2.node_id and q3.max_lat >= :bottom and q3.min_lat <= :top and q3.max_lon >= :left and q3.min_lon <= :right where q2.key not like 'tiger%' and q2.key not like 'source%' and q2.key not like 'attribution%' and q2.key not like 'nhd%' and q2.key not like 'power%' and q2.key not like 'created_by%' and q2.key not like 'seamark%' and q2.key not like 'gnis%' and q2.key not like 'fid%' and q2.key not like 'fixme%' and q2.key not like 'roof%') group by value order by p desc;";
-static const char* QUERY_GET_MEDIAN_UNIQUE_ID = "select median(id)/*, count(*) over () as p*/ from (select q1.way_id as id from way_nodes q1 inner join rtree_node q2 on q2.node_id=q1.node_id where q1.node_order=1 and (q2.max_lat >= :bottom and q2.min_lat <= :top) and (q2.max_lon >= :left and q2.min_lon <= :right) union all select node_id as id from rtree_node q4 where (q4.max_lat >= :bottom and q4.min_lat <= :top) and (q4.max_lon >= :left and q4.min_lon <= :right));";
+static const char* QUERY_GET_MEDIAN_UNIQUE_ID = "select median(id) from (select q1.way_id as id from way_nodes q1 inner join rtree_node q2 on q2.node_id=q1.node_id where q1.node_order=1 and (q2.max_lat >= :bottom and q2.min_lat <= :top) and (q2.max_lon >= :left and q2.min_lon <= :right) union all select node_id as id from rtree_node q4 where (q4.max_lat >= :bottom and q4.min_lat <= :top) and (q4.max_lon >= :left and q4.min_lon <= :right));";
 static const char* QUERY_GET_UNIQUE_WAY_AND_NODE_TAG_VALUES_BLACKLIST_MEDIUM_ZOOM = "select value, count(value) as p, way, count(*) over () from (select q1.*, 1 as way from way_tags q1 inner join way_nodes q4 on q4.node_order=1 and q4.way_id=q1.way_id inner join rtree_node q5 on q5.node_id=q4.node_id where (q5.max_lat >= :bottom and q5.min_lat <= :top) and (q5.max_lon >= :left and q5.min_lon <= :right) union all select q2.*, 0 as way from node_tags q2 inner join rtree_node q3 on q3.node_id=q2.node_id where (q3.max_lat >= :bottom and q3.min_lat <= :top) and (q3.max_lon >= :left and q3.min_lon <= :right)) where way_id in (select q1.way_id from (select q1.way_id from way_nodes q1 inner join rtree_node q2 on q2.node_id=q1.node_id inner join way_tags q3 on q3.way_id=q1.way_id where q1.node_order=1 and (q2.max_lat >= :bottom and q2.min_lat <= :top) and (q2.max_lon >= :left and q2.min_lon <= :right) and ((key = 'highway' and value in ('motorway', 'motorway_link', 'motorway_junction', 'primary', 'primary_link', 'secondary', 'secondary_link', 'tertiary', 'tertiary_link', 'trunk', 'trunk_link')) or (key in ('lanes', 'lanes:forward', 'lanes:backward', 'hgv', 'maxspeed', 'oneway', 'destination', 'motorway_link')))) q1) and ((key = 'highway' and value in ('motorway', 'motorway_link', 'motorway_junction', 'primary', 'primary_link', 'secondary', 'secondary_link', 'tertiary', 'tertiary_link', 'trunk', 'trunk_link')) or (key in ('lanes', 'lanes:forward', 'lanes:backward', 'hgv', 'maxspeed', 'oneway', 'name', 'ref', 'destination', 'motorway_link'))) group by value order by p desc;";
 static const char* QUERY_GET_WAY_NODES = "select q1.*, lag(q1.lat, 1) over () as prevLat, lag(q1.lon, 1) over () as prevLon, row_number() over (partition by q1.way_id order by way_id asc, node_order asc) as index_within_way from ( select way_id, q1.node_id, node_order, lat, lon from way_nodes q1 left join nodes q2 on q1.node_id=q2.node_id order by way_id asc, node_order asc) q1 WHERE lat is not null AND lon is not null /*and way_id=1527655305*/;";
 static const char* QUERY_GET_WAY_TAGS = "select q1.key, q1.value, (case when q1.key in (%HIGH_PRIORITY_WHITELIST%) then 0 when key in (%HUMAN_READABLE_WHITELIST%) then 2 else 1 end) as tagType from way_tags q1 where %MACHINE_READABLE_BLACKLIST% %WAY_ID% group by key, value order by tagType asc, key asc, value asc;";
@@ -2150,7 +2150,7 @@ void writeOsmAndStructure_mapIndex_levels_block_SingleSplitThreadWorker(void *pa
 	} else {
 		sqlite3_prepare_v2(ptr->dbConnection, "INSERT INTO waysWithinRectangle (way_id) SELECT w.way_id FROM way_nodes w INNER JOIN rtree_node r ON r.node_id = w.node_id WHERE w.node_order = 1 AND r.max_lat >= :bottom AND r.min_lat <= :top AND r.max_lon >= :left AND r.min_lon <= :right AND EXISTS (SELECT 1 FROM way_tags q3 WHERE q3.way_id = w.way_id AND ((q3.key = 'highway' AND q3.value IN ('motorway', 'motorway_link', 'motorway_junction', 'primary', 'primary_link', 'secondary', 'secondary_link', 'tertiary', 'tertiary_link', 'trunk', 'trunk_link')) OR (q3.key IN ('lanes', 'lanes:forward', 'lanes:backward', 'hgv', 'maxspeed', 'oneway', 'destination', 'motorway_link'))));", -1, &waysWithinRectangleStmt, 0);
 	}
-	sqlite3_prepare_v2(ptr->dbConnection, "select w.way_id, w.node_id, w.node_order, n.lat, n.lon, row_number() over (partition by w.way_id order by w.node_order asc) as index_within_way, count(*) over (partition by w.way_id) as total_nodes from way_nodes w inner join nodes n on n.node_id=w.node_id where w.way_id in waysWithinRectangle order by w.way_id, w.node_order asc;", -1, &wayNodeStmt, 0);
+	sqlite3_prepare_v2(ptr->dbConnection, "select w.way_id, w.node_id, n.lat, n.lon from way_nodes w inner join nodes n on n.node_id=w.node_id where w.way_id in waysWithinRectangle order by w.way_id, w.node_order asc;", -1, &wayNodeStmt, 0);
 	string wayTagsQuery = "select w1.way_id, t.key, t.value, case when t.key in (%HIGH_PRIORITY_WHITELIST%) then 0 when t.key in (%HUMAN_READABLE_WHITELIST%) then 2 else 1 end as tagType from way_tags t inner join waysWithinRectangle w1 on w1.way_id=t.way_id where %MACHINE_READABLE_BLACKLIST% group by w1.way_id, t.key, t.value order by w1.way_id asc, tagType asc, t.key asc, t.value asc;";
 	wayTagsQuery.replace(wayTagsQuery.find("%HIGH_PRIORITY_WHITELIST%"), 25, TAG_KEYS_HIGH_PRIORITY_WHITELIST);
 	wayTagsQuery.replace(wayTagsQuery.find("%HUMAN_READABLE_WHITELIST%"), 26, TAG_KEYS_HUMAN_READABLE_WHITELIST);
@@ -2203,6 +2203,7 @@ void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRec
 	ofstream mapDataBlockTemp(tempFilename, ios::binary);
 	google::protobuf::io::OstreamOutputStream mapDataBlockTempOstream(&mapDataBlockTemp);
 	google::protobuf::io::CodedOutputStream mapDataBlockCos(&mapDataBlockTempOstream);
+	int wayNodeRC = sqlite3_step(wayNodeStmt);
 	int wayTagStmtRC = sqlite3_step(wayTagStmt);
 	
 	if (shouldShowGUI) {
@@ -2324,6 +2325,7 @@ void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRec
 		//MapDataBlock.dataObjects
 		OsmAnd::OBF::MapData mapData;
 		uint64_t way_id, node_id, firstNodeID, node_order, index_within_way;
+		way_id = 0;
 		int64_t deltaLat, deltaLon;
 		int64_t lat, lon;
 		unsigned char *coordinatesByteArrayPtr = coordinatesByteArrayPtrWithinThread;
@@ -2332,7 +2334,7 @@ void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRec
 		unsigned char *stringNamesByteArrayPtr = stringNamesByteArrayPtrWithinThread;
 		uint32_t coordinatesByteLength = 0;
 		uint32_t coordinatesCount = 0;
-		uint32_t nodesWithinWay = 0;
+		//uint32_t nodesWithinWay = 0;
 		bool isArea = false;
 		uint64_t prevLatInt32, prevLonInt32; //The previous latitude and longitude with the cumulative rounding errors
 
@@ -2359,20 +2361,19 @@ void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRec
 			additionalTypesByteArrayPtr = additionalTypesByteArrayPtrWithinThread;
 			isArea = false;
 			
-			while ((rc = sqlite3_step(wayNodeStmt)) == SQLITE_ROW) {
+			if (wayNodeRC == SQLITE_ROW) {
+				//nodesWithinWay = sqlite3_column_int64(wayNodeStmt, 6);
+				node_id = sqlite3_column_int64(wayNodeStmt, 1);
+				firstNodeID = node_id;
 				way_id = sqlite3_column_int64(wayNodeStmt, 0);
-				nodeIDVector.emplace_back(sqlite3_column_int64(wayNodeStmt, 1));
-				latVector.emplace_back(latitudeToInt32(sqlite3_column_double(wayNodeStmt, 3), 21));
-				lonVector.emplace_back(longitudeToInt32(sqlite3_column_double(wayNodeStmt, 4), 21));
-
-				if (sqlite3_column_int64(wayNodeStmt, 5) /* index_within_way */ == 1) {
-					nodesWithinWay = sqlite3_column_int64(wayNodeStmt, 6);
-					firstNodeID = node_id;
-				}
-
-				if (sqlite3_column_int64(wayNodeStmt, 5) /* index_within_way */ == sqlite3_column_int64(wayNodeStmt, 6) /* total_nodes */) break;
+				do {
+					nodeIDVector.emplace_back(sqlite3_column_int64(wayNodeStmt, 1));
+					latVector.emplace_back(latitudeToInt32(sqlite3_column_double(wayNodeStmt, 2), 21));
+					lonVector.emplace_back(longitudeToInt32(sqlite3_column_double(wayNodeStmt, 3), 21));
+				} while (((wayNodeRC = sqlite3_step(wayNodeStmt)) == SQLITE_ROW) && (sqlite3_column_int64(wayNodeStmt, 0) /* way_id */ == way_id));
 			}
-			if (rc != SQLITE_ROW) shouldStopIteratingOverWays = true;
+			//We have to check this again instead of using ELSE because this could have changed in the DO WHILE loop test condition and stopped it
+			if (wayNodeRC != SQLITE_ROW) shouldStopIteratingOverWays = true;
 
 			if (mediumZoom) VWSimplify(&nodeIDVector, &latVector, &lonVector, 40000000);
 
@@ -2407,7 +2408,7 @@ void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRec
 				}
 				//cout << endl << "way deltaLat=" << deltaLat << " (lower 5 bits=" << (deltaLat & 0x1f) << "), deltaLon=" << deltaLon << " (lower 5 bits=" << (deltaLon & 0x1f) << ")" << endl;
 				//If this is the last node in the way, see if adding or subtracting 32 makes the end node coordinates more accurate
-				if (index_within_way == nodesWithinWay) {
+				if (index_within_way == latVector.size()) {
 					isArea = firstNodeID == node_id;
 				}
 				//cout << endl << "deltaX=" << ((deltaLon >> 5) << 5) << ", deltaY=" << ((deltaLat >> 5) << 5);
@@ -2505,10 +2506,10 @@ void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRec
 		double latDouble, lonDouble;
 		nodeIDIndex--; //This is so it's 0 the first time it's incremented
 		uint64_t nodeID = 0;
-		uint64_t nodeCount = 0;
-		string queryGetOnlyNodesWithTags = "select q1.node_id, ((q2.min_lat + q2.max_lat)/2), ((q2.min_lon + q2.max_lon)/2), q1.key, q1.value, (case when q1.key in (" + TAG_KEYS_HIGH_PRIORITY_WHITELIST + ") then 0 when key in (" + TAG_KEYS_HUMAN_READABLE_WHITELIST + ") then 2 else 1 end) as tagType, (select count(distinct q1.node_id) from node_tags q1 inner join rtree_node q2 on q2.node_id=q1.node_id where (q2.max_lat >= :bottom and q2.min_lat <= :top) and (q2.max_lon >= :left and q2.min_lon <= :right)) as nodeIDCount from node_tags q1 inner join rtree_node q2 on q2.node_id=q1.node_id where (q2.max_lat >= :bottom and q2.min_lat <= :top) and (q2.max_lon >= :left and q2.min_lon <= :right) order by q1.node_id asc, tagType asc, key asc, value asc;";
+		//uint64_t nodeCount = 0;
+		string queryGetOnlyNodesWithTags = "select q1.node_id, ((q2.min_lat + q2.max_lat)/2), ((q2.min_lon + q2.max_lon)/2), q1.key, q1.value, (case when q1.key in (" + TAG_KEYS_HIGH_PRIORITY_WHITELIST + ") then 0 when key in (" + TAG_KEYS_HUMAN_READABLE_WHITELIST + ") then 2 else 1 end) as tagType from node_tags q1 inner join rtree_node q2 on q2.node_id=q1.node_id where (q2.max_lat >= :bottom and q2.min_lat <= :top) and (q2.max_lon >= :left and q2.min_lon <= :right) order by q1.node_id asc, tagType asc, key asc, value asc;";
 		if (mediumZoom) {
-			queryGetOnlyNodesWithTags = "select q1.node_id, ((q2.min_lat + q2.max_lat)/2), ((q2.min_lon + q2.max_lon)/2), q1.key, q1.value, (case when q1.key in (" + TAG_KEYS_HIGH_PRIORITY_WHITELIST + ") then 0 when key in (" + TAG_KEYS_HUMAN_READABLE_WHITELIST + ") then 2 else 1 end) as tagType, (select count(distinct q1.node_id) from node_tags q1 inner join rtree_node q2 on q2.node_id=q1.node_id where (q2.max_lat >= :bottom and q2.min_lat <= :top) and (q2.max_lon >= :left and q2.min_lon <= :right)) as nodeIDCount from node_tags q1 inner join rtree_node q2 on q2.node_id=q1.node_id where ((key = 'highway' and value in ('motorway', 'motorway_link', 'motorway_junction', 'primary', 'primary_link', 'secondary', 'secondary_link', 'tertiary', 'tertiary_link', 'trunk', 'trunk_link')) or (key in ('lanes', 'lanes:forward', 'lanes:backward', 'hgv', 'maxspeed', 'oneway', 'name', 'ref', 'destination', 'motorway_link'))) and (q2.max_lat >= :bottom and q2.min_lat <= :top) and (q2.max_lon >= :left and q2.min_lon <= :right) order by q1.node_id asc, tagType asc, key asc, value asc;";
+			queryGetOnlyNodesWithTags = "select q1.node_id, ((q2.min_lat + q2.max_lat)/2), ((q2.min_lon + q2.max_lon)/2), q1.key, q1.value, (case when q1.key in (" + TAG_KEYS_HIGH_PRIORITY_WHITELIST + ") then 0 when key in (" + TAG_KEYS_HUMAN_READABLE_WHITELIST + ") then 2 else 1 end) as tagType from node_tags q1 inner join rtree_node q2 on q2.node_id=q1.node_id where ((key = 'highway' and value in ('motorway', 'motorway_link', 'motorway_junction', 'primary', 'primary_link', 'secondary', 'secondary_link', 'tertiary', 'tertiary_link', 'trunk', 'trunk_link')) or (key in ('lanes', 'lanes:forward', 'lanes:backward', 'hgv', 'maxspeed', 'oneway', 'name', 'ref', 'destination', 'motorway_link'))) and (q2.max_lat >= :bottom and q2.min_lat <= :top) and (q2.max_lon >= :left and q2.min_lon <= :right) order by q1.node_id asc, tagType asc, key asc, value asc;";
 		}
 		rc = sqlite3_prepare_v2(dbConnection, queryGetOnlyNodesWithTags.c_str(), -1, &stmt, 0);
 		sqlite3_bind_double(stmt, sqlite3_bind_parameter_index(stmt, ":left"), rectangle->left);
@@ -2525,9 +2526,9 @@ void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRec
 		while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
 			if (sqlite3_column_int64(stmt, 0) != nodeID) {
 				nodeIDIndex++;
-				if (nodeIDIndex == 0) nodeCount = sqlite3_column_int64(stmt, 6);
+				//if (nodeIDIndex == 0) nodeCount = sqlite3_column_int64(stmt, 6);
 				nodeID = sqlite3_column_int64(stmt, 0);
-				if (verbose && (nodeCount < 1000 || (nodeIDIndex % 999 == 0))) cout << "\rWriting node " << (nodeIDIndex + 1) << "/" << nodeCount << " (" << ((nodeIDIndex + 1) * 100.0) / nodeCount << "%)";
+				//if (verbose && (nodeCount < 1000 || (nodeIDIndex % 999 == 0))) cout << "\rWriting node " << (nodeIDIndex + 1) << "/" << nodeCount << " (" << ((nodeIDIndex + 1) * 100.0) / nodeCount << "%)";
 				//We're starting a new node so write the current one and clear the protobuf message
 				if (nodeIDIndex > 0) {
 					mapData.set_coordinates(reinterpret_cast<const char*>(coordinatesByteArrayPtrWithinThread), (coordinatesByteArrayPtr - coordinatesByteArrayPtrWithinThread));
@@ -2602,7 +2603,7 @@ void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRec
 		sqlite3_finalize(stmt);
 		stmt = nullptr;
 
-		if (verbose) cout << "\rWriting node " << nodeCount << "/" << nodeCount << " (100%)                                        ";
+		//if (verbose) cout << "\rWriting node " << nodeCount << "/" << nodeCount << " (100%)                                        ";
 
 		//It would be good to alternate storing the StringTable before and after the MapData object because storing similar data together (MapData/StringTable/StringTable/MapData/MapData/etc.) can be compressed better but OsmAnd seems to expect it to be at the end or everything in every other block says "#[index] NOT FOUND"
 		mapDataBlockCos.WriteTag((OsmAnd::OBF::MapDataBlock::kStringTableFieldNumber << 3) | 2);

@@ -1,13 +1,16 @@
 OsmAndMapCreator++
 ==================
 
-OsmAndMapCreator++ is an unofficial utility that generates OsmAnd OBF maps from OpenStreetMap SQLite databases. It is written in C++ and designed to be small and efficient and support generating large areas like the entire southeast US as one map by reading everything from an SQLite database and storing temp files on the hard drive instead of trying to load everything in memory first like the official tool. Built with Clang 22.1.5 and Visual C++ 2017 and works on Windows XP x64 or higher
+OsmAndMapCreator++ is an unofficial utility that generates OsmAnd OBF maps from OpenStreetMap SQLite databases. It is written in C++ and designed to be small and efficient and support generating large areas like the entire southeast US as one map by reading everything from an SQLite database and storing temp files on the hard drive instead of trying to load everything in memory first like the official tool. Built with Clang 22.1.5 and Visual C++ 2017 and works on Windows XP x64 or higher and Debian Linux
 
 #### How to use
 1. Download or generate an OSM PBF file. For example, you could use an extract from Geofabrik
 2. Use my pbf2sqlite fork and run **pbf2sqlite64.exe \[database file\] read \[PBF file\] index rtree_all addr graph** to convert it to an SQLite database. The output should be around 24 times the size of the PBF file. My PBF file of the southeast US is 2.82 GiB and the vacuumed DB file is 67.28 GiB. You need to use my fork since it adds all nodes to the RTree and skips adding RTree entries for ways and nodes with null latitude and longitude values. The official version skips untagged nodes for the "rtree" option which breaks this program's bounding box searches and converts null coordinates to 0 which makes the bounding boxes huge so almost everything is in just a few boxes and you can't just filter that because then you would break areas that include the equator
 3. (Recommended) Run the VACUUM SQL command to optimize the database. You can use VACUUM INTO if you need to use a 2nd drive
 4. Run **osmandmapcreator++.exe** with "-i \[input file\]" and optionally "-o \[output file\]". You can also just drag a \*.db file onto the EXE
+
+#### RAM usage
+You can control how much memory is used with the **--cache-size** and **--mmap-size** flags. These are per-thread and measured in MiB. Using more memory greatly speeds up the process since SQLite uses a tiny cache by default. Using a larger cache makes a huge difference even if you're working from an SSD. The default is 64 MiB for both which uses up to about 512 MiB of memory
 
 <br>Using all 4 cores on an Intel Core 2 Quad Q9550 in a VM with 1 GB of RAM
 

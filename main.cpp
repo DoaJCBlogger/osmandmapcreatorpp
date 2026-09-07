@@ -232,6 +232,8 @@ static bool shouldShowGUI = true;
 static unsigned int guiSelectedQuadtreeSplit = 0;
 static unsigned int guiSelectedSplitWithinQuadtree = 0;
 uint32_t pid = 0;
+uint64_t sqliteCacheSizeMiBPerThread = 64;
+uint64_t sqliteMMAPSizeMiBPerThread = 64;
 
 #define ID_STARTBTN 1
 #define ID_INPUT_FILENAME_FIELD 2
@@ -275,7 +277,7 @@ bool foundInputFilenameArgument = false;
 bool foundOutputFilenameArgument = false;
 
 int main(int argc, char** argv) {
-	cout << "OsmAndMapCreator++ v0.1.11" << endl;
+	cout << "OsmAndMapCreator++ v0.1.12" << endl;
 	#if defined(_WIN32)
 		pid = GetCurrentProcessId();
 	#elif defined(__linux__)
@@ -345,6 +347,16 @@ int main(int argc, char** argv) {
 			
 			if ((arg_view == "-verbose"sv || arg_view == "--verbose"sv || arg_view == "/verbose"sv)) {
 				verbose = true;
+			}
+
+			if ((arg_view == "-cache-size"sv || arg_view == "--cache-size"sv || arg_view == "/cache-size"sv) && i < (argc - 1)) {
+				sqliteCacheSizeMiBPerThread = atoi(argv[i + 1]);
+				if (sqliteCacheSizeMiBPerThread == 0) sqliteCacheSizeMiBPerThread = 64;
+			}
+
+			if ((arg_view == "-mmap-size"sv || arg_view == "--mmap-size"sv || arg_view == "/mmap-size"sv) && i < (argc - 1)) {
+				sqliteMMAPSizeMiBPerThread = atoi(argv[i + 1]);
+				if (sqliteMMAPSizeMiBPerThread == 0) sqliteMMAPSizeMiBPerThread = 64;
 			}
 		}
 	}
@@ -449,6 +461,7 @@ void createOBFFile(void *param) {
 
 	cout << endl << "Input file: \"" << inputFilename << "\"";
 	cout << endl << "Output file: \"" << outputFilename << "\"";
+	cout << endl << "Using " << sqliteCacheSizeMiBPerThread << " MiB cache, " << sqliteMMAPSizeMiBPerThread << " MiB MMAP (" << ((sqliteCacheSizeMiBPerThread + sqliteMMAPSizeMiBPerThread) << 2) << " MiB total peak RAM)";
 
 	unique_ptr<unsigned char[]> fileCopyBufferUniquePtr = make_unique<unsigned char[]>(FILE_COPY_BUFFER_SIZE);
 	unique_ptr<unsigned char[]> coordinatesByteArrayTmpUniquePtr = make_unique<unsigned char[]>(1048576);
@@ -784,7 +797,7 @@ void calculateTotalRectanglesForGUI() {
 #endif
 
 void printHelp() {
-	cout << "OsmAndMapCreator++ version 0.1.11";
+	cout << "OsmAndMapCreator++ version 0.1.12";
 	cout << endl << endl << "This utility generates OBF map files for OsmAnd from an OpenStreetMap SQLite database";
 	cout << endl << endl << "Usage:";
 	cout << endl << "\t-i [path]\t\t\t\tInput filename (required)";
@@ -794,6 +807,9 @@ void printHelp() {
 	cout << endl << "\t--force-quadtree2-split [integer]\tForce a 2-level quadtree split with a power-of-2 split in each section (for example, 2 would be 4:4:4x4). Takes precedence when combined with --force-single-split";
 	cout << endl << "\t--force-quadtree3-split [integer]\tForce a 3-level quadtree split with a power-of-2 split in each section (for example, 2 would be 4:4:4:4x4). Takes precedence when combined with --force-quadtree2-split or --force-single-split";
 	cout << endl << "\t--no-gui\t\t\t\tOnly show the command-line window";
+	cout << endl << "\t--verbose\t\t\t\tPrint debug messages";
+	cout << endl << "\t--cache-size\t\t\t\tSQLite per-thread cache size in MiB (default 64)";
+	cout << endl << "\t--mmap-size\t\t\t\tSQLite per-thread memory-mapped file size in MiB (default 64)";
 	cout << endl << "\t-h\t\t\t\t\tPrint this message";
 }
 
@@ -2144,6 +2160,9 @@ void writeOsmAndStructure_mapIndex_levels_block_SingleSplitThreadWorker(void *pa
 	char *errorMessage = 0;
 	//Get a list of all the way ID's
 	//Use the first node to see if the way should be included in the current block
+	sqlite3_exec(ptr->dbConnection, string("PRAGMA cache_size = -" + to_string(sqliteCacheSizeMiBPerThread << 10) + ";").c_str(), NULL, 0, &errorMessage);
+	sqlite3_exec(ptr->dbConnection, string("PRAGMA mmap_size = " + to_string(sqliteMMAPSizeMiBPerThread << 20) + ";").c_str(), NULL, 0, &errorMessage);
+	sqlite3_exec(ptr->dbConnection, "PRAGMA journal_mode=WAL;", NULL, 0, &errorMessage);
 	sqlite3_exec(ptr->dbConnection, "CREATE TEMP TABLE waysWithinRectangle (way_id INTEGER PRIMARY KEY);", NULL, 0, &errorMessage);
 	if (!ptr->mediumZoom) {
 		sqlite3_prepare_v2(ptr->dbConnection, "INSERT INTO waysWithinRectangle (way_id) SELECT w.way_id FROM way_nodes w INNER JOIN rtree_node r ON r.node_id = w.node_id WHERE w.node_order = 1 AND r.max_lat >= :bottom AND r.min_lat <= :top AND r.max_lon >= :left AND r.min_lon <= :right;", -1, &waysWithinRectangleStmt, 0);

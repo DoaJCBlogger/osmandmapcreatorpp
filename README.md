@@ -1,7 +1,7 @@
 OsmAndMapCreator++
 ==================
 
-OsmAndMapCreator++ is an unofficial utility that generates OsmAnd OBF maps from OpenStreetMap SQLite databases. It is written in C++ and designed to be small and efficient and support generating large areas like the entire southeast US as one map by reading everything from an SQLite database and storing temp files on the hard drive instead of trying to load everything in memory first like the official tool. Built with Clang 22.1.5 and Visual C++ 2017 and works on Windows XP x64 or higher and Debian Linux
+OsmAndMapCreator++ is an unofficial utility that generates OsmAnd OBF maps from OpenStreetMap SQLite databases. It is written in C++ and designed to be small and efficient and support generating large areas like the entire southeast US as one map by reading everything from an SQLite database and storing temp files on the hard drive instead of trying to load everything in memory first like the official tool. Built with Clang 23.1.6 and Visual C++ 2017 and works on Windows XP x64 or higher and Debian Linux
 
 #### How to use
 1. Download or generate an OSM PBF file. For example, you could use an extract from Geofabrik
@@ -43,3 +43,6 @@ Build the program
 #### Known issues
 - The bounding boxes probably need to be extended to overlap more
 - Add route and address indexes (currently it only generates vector maps)
+
+#### AI Usage Disclosure
+I used Claude Sonnet to find bugs, optimize some of the SQL queries, get advice about the overall design, disassemble and explain OBF structures, and make a UI mockup but the code is written by myself and not vibe coded

@@ -195,6 +195,7 @@ struct MapDataBlockThreadInfo {
 	unsigned char *stringNamesByteArrayPtrWithinThread;
 	bool mediumZoom;
 	uint64_t *mapDataBlockSizes;
+	atomic<unsigned int> *progressFinishedBlocks;
 	MapDataBlockThreadInfo():tempFilename(""),rectangles(nullptr),rectanglesCount(0),rectanglesStartIdx(0),stride(0),dbConnection(nullptr),stmt(nullptr),threadID(0),coordinatesByteArrayPtrWithinThread(nullptr),typesByteArrayPtrWithinThread(nullptr),additionalTypesByteArrayPtrWithinThread(nullptr),stringNamesByteArrayPtrWithinThread(nullptr),mediumZoom(false),mapDataBlockSizes(nullptr){}
 };
 
@@ -225,8 +226,9 @@ static int forceSplitMode = -1; //-1 = automatic, 0 = single, 1 = 2-level quadtr
 static bool verbose = false;
 uint32_t screenWidth, screenHeight;
 //static unsigned int threads = 4;
-static unsigned int progressBitmapWidth, progressBitmapHeight, progressTotalRectangles;
-atomic<unsigned int> progressCompletedRectangles = {0};
+static unsigned int progressBitmapWidth, progressBitmapHeight, progressTotalDetailedVectorMapRectangles, progressTotalZoomedOutVectorMapRectangles;
+atomic<unsigned int> progressCompletedDetailedVectorMapRectangles = {0};
+atomic<unsigned int> progressCompletedZoomedOutVectorMapRectangles = {0};
 static unsigned char *progressBitmapPtr = nullptr;
 static bool shouldShowGUI = true;
 static unsigned int guiSelectedQuadtreeSplit = 0;
@@ -257,9 +259,15 @@ uint64_t sqliteMMAPSizeMiBPerThread = 64;
 	static HWND hwndRectangleCountLabel;
 	static HWND hwndDetailedVectorMapProgressLabel;
 	static HWND hwndDetailedVectorMapProgressBar;
-	static HWND hwndProgressPercentLabel;
+	static HWND hwndZoomedOutVectorMapProgressLabel;
+	static HWND hwndZoomedOutVectorMapProgressBar;
+	static HWND hwndDetailedVectorMapProgressPercentLabel;
+	static HWND hwndZoomedOutVectorMapProgressPercentLabel;
 	static HWND hwndInputFilenameBrowseButton;
 	static HWND hwndOutputFilenameBrowseButton;
+	static HWND hwndFilesGroupbox;
+	static HWND hwndSplitModeGroupbox;
+	static HWND hwndBlockMapGroupbox;
 #endif
 
 struct SQLite3StatementDeleter {
@@ -383,12 +391,11 @@ int main(int argc, char** argv) {
 			windowHeight = 900;
 			hwndMainWin = CreateWindowW(wc.lpszClassName, L"OsmAndMapCreator++", WS_OVERLAPPEDWINDOW | WS_VISIBLE, 0, 0, windowWidth, windowHeight, 0, 0, hInstance, 0);
 			hwndStartBtn = CreateWindowEx(0, L"BUTTON", L"Convert", WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON, 650, 812, 120, 25, hwndMainWin, (HMENU)ID_STARTBTN, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
-			hwndInputFilenameLabel = CreateWindowEx(0, L"STATIC", L"Input filename", WS_CHILD | WS_VISIBLE | SS_LEFT, 12, 680, 200, 20, hwndMainWin, NULL, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
-			hwndOutputFilenameLabel = CreateWindowEx(0, L"STATIC", L"Output filename", WS_CHILD | WS_VISIBLE | SS_LEFT, 12, 710, 200, 20, hwndMainWin, NULL, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
-			hwndInputFilenameField = CreateWindowEx(WS_EX_CLIENTEDGE, L"EDIT", utf8_to_wstring(inputFilename).c_str(), WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_LEFT, 100, 680, 390, 20, hwndMainWin, (HMENU)ID_INPUT_FILENAME_FIELD, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
-			hwndOutputFilenameField = CreateWindowEx(WS_EX_CLIENTEDGE, L"EDIT", utf8_to_wstring(outputFilename).c_str(), WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_LEFT, 100, 708, 390, 20, hwndMainWin, (HMENU)ID_OUTPUT_FILENAME_FIELD, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
-			hwndSplitLabel = CreateWindowEx(0, L"STATIC", L"Split mode", WS_CHILD | WS_VISIBLE | SS_LEFT, 12, 740, 150, 20, hwndMainWin, NULL, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
-			hwndQuadtreeCombobox = CreateWindowEx(0, L"COMBOBOX", NULL, WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST, 100, 738, 140, 20, hwndMainWin, (HMENU)ID_QUADTREE_COMBOBOX, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
+			hwndInputFilenameLabel = CreateWindowEx(0, L"STATIC", L"Input filename", WS_CHILD | WS_VISIBLE | SS_LEFT, 20, 35, 200, 20, hwndMainWin, NULL, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
+			hwndOutputFilenameLabel = CreateWindowEx(0, L"STATIC", L"Output filename", WS_CHILD | WS_VISIBLE | SS_LEFT, 20, 65, 200, 20, hwndMainWin, NULL, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
+			hwndInputFilenameField = CreateWindowEx(WS_EX_CLIENTEDGE, L"EDIT", utf8_to_wstring(inputFilename).c_str(), WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_LEFT, 108, 33, 390, 20, hwndMainWin, (HMENU)ID_INPUT_FILENAME_FIELD, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
+			hwndOutputFilenameField = CreateWindowEx(WS_EX_CLIENTEDGE, L"EDIT", utf8_to_wstring(outputFilename).c_str(), WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_LEFT, 108, 63, 390, 20, hwndMainWin, (HMENU)ID_OUTPUT_FILENAME_FIELD, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
+			hwndQuadtreeCombobox = CreateWindowEx(0, L"COMBOBOX", NULL, WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST, 20, 135, 140, 20, hwndMainWin, (HMENU)ID_QUADTREE_COMBOBOX, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
 			//SendMessage(hwndQuadtreeCombobox, CB_ADDSTRING, 0, (LPARAM)L"1-level quadtree 4:");
 			SendMessage(hwndQuadtreeCombobox, CB_ADDSTRING, 0, (LPARAM)L"2-level quadtree 4:4:");
 			SendMessage(hwndQuadtreeCombobox, CB_ADDSTRING, 0, (LPARAM)L"3-level quadtree 4:4:4:");
@@ -399,7 +406,7 @@ int main(int argc, char** argv) {
 				SendMessage(hwndQuadtreeCombobox, CB_SETCURSEL, (WPARAM)(forceSplitMode - 1), 0);
 				guiSelectedQuadtreeSplit = (forceSplitMode - 1);
 			}
-			hwndSplitCombobox = CreateWindowEx(0, L"COMBOBOX", NULL, WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST, 250, 738, 240, 20, hwndMainWin, (HMENU)ID_SPLIT_COMBOBOX, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
+			hwndSplitCombobox = CreateWindowEx(0, L"COMBOBOX", NULL, WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST, 170, 135, 240, 20, hwndMainWin, (HMENU)ID_SPLIT_COMBOBOX, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
 			SendMessage(hwndSplitCombobox, CB_ADDSTRING, 0, (LPARAM)L"Auto");
 			SendMessage(hwndSplitCombobox, CB_ADDSTRING, 0, (LPARAM)L"1x1 (single box)");
 			SendMessage(hwndSplitCombobox, CB_ADDSTRING, 0, (LPARAM)L"2x2 (4 boxes)");
@@ -413,14 +420,21 @@ int main(int argc, char** argv) {
 			SendMessage(hwndSplitCombobox, CB_SETCURSEL, (WPARAM)(forcedSplitPowerOf2 + 1), 0);
 			guiSelectedSplitWithinQuadtree = (forcedSplitPowerOf2 + 1);
 			calculateTotalRectanglesForGUI();
-			hwndRectangleCountLabel = CreateWindowEx(0, L"STATIC", L"Data blocks", WS_CHILD | WS_VISIBLE | SS_LEFT, 500, 740, 200, 20, hwndMainWin, NULL, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
+			hwndRectangleCountLabel = CreateWindowEx(0, L"STATIC", L"Data blocks", WS_CHILD | WS_VISIBLE | SS_LEFT, 420, 138, 200, 20, hwndMainWin, NULL, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
 			calculateTotalRectanglesForGUI();
-			hwndDetailedVectorMapProgressLabel = CreateWindowEx(0, L"STATIC", L"Detailed map", WS_CHILD | WS_VISIBLE | SS_LEFT, 12, 770, 85, 20, hwndMainWin, NULL, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
-			hwndDetailedVectorMapProgressBar = CreateWindowEx(0, PROGRESS_CLASS, NULL, WS_CHILD | WS_VISIBLE | SS_LEFT, 100, 768, 390, 20, hwndMainWin, NULL, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
-			hwndProgressPercentLabel = CreateWindowEx(0, L"STATIC", L"0%", WS_VISIBLE | WS_CHILD | SS_LEFT, 500, 770, 80, 20, hwndMainWin, NULL, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
+			hwndDetailedVectorMapProgressLabel = CreateWindowEx(0, L"STATIC", L"Detailed map", WS_CHILD | WS_VISIBLE | SS_LEFT, 12, 740, 85, 20, hwndMainWin, NULL, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
+			hwndZoomedOutVectorMapProgressLabel = CreateWindowEx(0, L"STATIC", L"Zoomed-out map", WS_CHILD | WS_VISIBLE | SS_LEFT, 12, 765, 85, 20, hwndMainWin, NULL, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
+			hwndDetailedVectorMapProgressBar = CreateWindowEx(0, PROGRESS_CLASS, NULL, WS_CHILD | WS_VISIBLE | SS_LEFT, 100, 738, 390, 20, hwndMainWin, NULL, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
+			hwndZoomedOutVectorMapProgressBar = CreateWindowEx(0, PROGRESS_CLASS, NULL, WS_CHILD | WS_VISIBLE | SS_LEFT, 100, 763, 390, 20, hwndMainWin, NULL, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
+			hwndDetailedVectorMapProgressPercentLabel = CreateWindowEx(0, L"STATIC", L"0%", WS_VISIBLE | WS_CHILD | SS_LEFT, 500, 740, 80, 20, hwndMainWin, NULL, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
+			hwndZoomedOutVectorMapProgressPercentLabel = CreateWindowEx(0, L"STATIC", L"0%", WS_VISIBLE | WS_CHILD | SS_LEFT, 500, 765, 80, 20, hwndMainWin, NULL, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
 			SendMessage(hwndDetailedVectorMapProgressBar, PBM_SETRANGE, 0, (WPARAM)MAKELONG(0, 65535));
-			hwndInputFilenameBrowseButton = CreateWindowEx(0, L"BUTTON", L"Browse...", WS_TABSTOP | WS_VISIBLE | WS_CHILD, 500, 680, 80, 20, hwndMainWin, (HMENU)ID_BROWSE_INPUT_FILE, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
-			hwndOutputFilenameBrowseButton = CreateWindowEx(0, L"BUTTON", L"Browse...", WS_TABSTOP | WS_VISIBLE | WS_CHILD, 500, 708, 80, 20, hwndMainWin, (HMENU)ID_BROWSE_OUTPUT_FILE, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
+			SendMessage(hwndZoomedOutVectorMapProgressBar, PBM_SETRANGE, 0, (WPARAM)MAKELONG(0, 65535));
+			hwndInputFilenameBrowseButton = CreateWindowEx(0, L"BUTTON", L"Browse...", WS_TABSTOP | WS_VISIBLE | WS_CHILD, 508, 33, 80, 20, hwndMainWin, (HMENU)ID_BROWSE_INPUT_FILE, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
+			hwndOutputFilenameBrowseButton = CreateWindowEx(0, L"BUTTON", L"Browse...", WS_TABSTOP | WS_VISIBLE | WS_CHILD, 508, 63, 80, 20, hwndMainWin, (HMENU)ID_BROWSE_OUTPUT_FILE, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
+			hwndFilesGroupbox = CreateWindowEx(0, L"BUTTON", L"Files", WS_VISIBLE | WS_CHILD | BS_GROUPBOX, 12, 10, 760, 90, hwndMainWin, NULL, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
+			hwndSplitModeGroupbox = CreateWindowEx(0, L"BUTTON", L"Split Mode", WS_VISIBLE | WS_CHILD | BS_GROUPBOX, 12, 110, 760, 70, hwndMainWin, NULL, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
+			hwndBlockMapGroupbox = CreateWindowEx(0, L"BUTTON", L"Block Map", WS_VISIBLE | WS_CHILD | BS_GROUPBOX, 12, 190, 760, 530, hwndMainWin, NULL, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
 			EnumChildWindows(hwndMainWin, (WNDENUMPROC)SetFont, (LPARAM)GetStockObject(DEFAULT_GUI_FONT));
 			//if (!inputFilename.empty()) _beginthread(createOBFFile, 0, nullptr);
 			thread t;
@@ -579,6 +593,13 @@ void calculateTotalRectanglesForGUI() {
 }
 
 #if defined(_WIN32)
+	static HPEN lightGrayOuterBorderColor;
+	static HPEN lightGrayMiddleBorderColor;
+	static HPEN darkGrayInnerBorderColor;
+	static HBRUSH darkBlueBrush;
+	static HBRUSH graySkippedDataBrush;
+	static HBRUSH redBrush;
+
 	LRESULT CALLBACK WndProc(HWND hwndMainWin, UINT msg, WPARAM wParam, LPARAM lParam) {
 		RECT windowRect;
 		int width, height;
@@ -598,11 +619,18 @@ void calculateTotalRectanglesForGUI() {
 		switch (msg) {
 			case WM_CREATE:
 				{
-				//Apply the correct (non-bold) font to all the UI elements
-				EnumChildWindows(hwndMainWin, (WNDENUMPROC)SetFont, (LPARAM)GetStockObject(DEFAULT_GUI_FONT));
+					//Apply the correct (non-bold) font to all the UI elements
+					EnumChildWindows(hwndMainWin, (WNDENUMPROC)SetFont, (LPARAM)GetStockObject(DEFAULT_GUI_FONT));
 
-				//Set the default cursor
-				SetCursor(LoadCursor(0, IDC_ARROW));
+					//Set the default cursor
+					SetCursor(LoadCursor(0, IDC_ARROW));
+					
+					lightGrayOuterBorderColor = CreatePen(PS_SOLID, 1, RGB(208, 208, 208));
+					lightGrayMiddleBorderColor = CreatePen(PS_SOLID, 1, RGB(128, 128, 128));
+					darkGrayInnerBorderColor = CreatePen(PS_SOLID, 1, RGB(64, 64, 64));
+					darkBlueBrush = CreateSolidBrush(RGB(0, 0, 128));
+					graySkippedDataBrush = CreateSolidBrush(RGB(160, 160, 160));
+					redBrush = CreateSolidBrush(RGB(255, 0, 0));
 				}
 				break;
 			case WM_PAINT:
@@ -613,10 +641,13 @@ void calculateTotalRectanglesForGUI() {
 						RECT windowRect;
 						HGDIOBJ hOldPen;
 						HGDIOBJ hOldBrush;
-						unsigned int progressAreaWidth, progressAreaHeight;
+						HGDIOBJ hOldFont;
+						unsigned int progressAreaWidth, progressAreaHeight, windowWidth, windowHeight;
 						GetWindowRect(hwndMainWin, &windowRect);
-						progressAreaWidth = (windowRect.right - windowRect.left) - 28;
-						progressAreaHeight = (windowRect.bottom - windowRect.top) - 250;
+						windowWidth = windowRect.right - windowRect.left;
+						windowHeight = windowRect.bottom - windowRect.top;
+						progressAreaWidth = windowWidth - 28 - 200;
+						progressAreaHeight = windowHeight - 250 - 200 + 50;
 						if (progressBitmapWidth > 0 && progressBitmapHeight > 0) {
 							SetStretchBltMode(hdc, COLORONCOLOR);
 							HDC progressImageHDC = CreateCompatibleDC(hdc);
@@ -630,55 +661,85 @@ void calculateTotalRectanglesForGUI() {
 							bm.bmBits = progressBitmapPtr;
 							HBITMAP progressBitmap = CreateBitmapIndirect(&bm);
 							SelectObject(progressImageHDC, progressBitmap);
-							StretchBlt(hdc, 12, 12, progressAreaWidth - 12, progressAreaHeight - 12, progressImageHDC, 0, 0, progressBitmapWidth, progressBitmapHeight, SRCCOPY);
+							StretchBlt(hdc, 12 + 12 + 3, 12 + 200 + 5, progressAreaWidth - 13, progressAreaHeight - 14, progressImageHDC, 0, 0, progressBitmapWidth, progressBitmapHeight, SRCCOPY);
 							DeleteObject(progressBitmap);
 							DeleteDC(progressImageHDC);
 						} else {
 							HBRUSH hBrush = CreateSolidBrush(RGB(255, 255, 255));
 							hOldPen = SelectObject(hdc, GetStockObject(NULL_PEN));
 							hOldBrush = SelectObject(hdc, hBrush);
-							Rectangle(hdc, 12, 12, progressAreaWidth + 1, progressAreaHeight + 1);
+							Rectangle(hdc, 12 + 12 + 3, 12 + 200 + 5, progressAreaWidth + 1 + 12 + 3, progressAreaHeight + 1 + 200 + 5);
 							SelectObject(hdc, hOldPen);
 							SelectObject(hdc, hOldBrush);
 							DeleteObject(hBrush);
 						}
 
 						//Draw the 3D edge
-						MoveToEx(hdc, 10, 10, NULL);
-						HPEN lightGrayOuterBorderColor = CreatePen(PS_SOLID, 1, RGB(208, 208, 208));
-						HPEN lightGrayMiddleBorderColor = CreatePen(PS_SOLID, 1, RGB(128, 128, 128));
-						HPEN darkGrayInnerBorderColor = CreatePen(PS_SOLID, 1, RGB(64, 64, 64));
+						//hwndBlockMapGroupbox = CreateWindowEx(0, L"BUTTON", L"Block Map", WS_VISIBLE | WS_CHILD | BS_GROUPBOX, 12, 200, 760, 300, hwndMainWin, NULL, (HINSTANCE)GetWindowLongPtr(hwndMainWin, GWLP_HINSTANCE), NULL);
+						MoveToEx(hdc, 10 + 12 + 3, 10 + 200 + 5, NULL); //Top-left corner
 						hOldPen = SelectObject(hdc, lightGrayOuterBorderColor);
 						hOldBrush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
-						Rectangle(hdc, 10, 10, progressAreaWidth + 2, progressAreaHeight + 2);
+						Rectangle(hdc, 10 + 12 + 3, 10 + 200 + 5, progressAreaWidth + 2 + 12 + 3, progressAreaHeight + 2 + 200 + 5);
 						SelectObject(hdc, lightGrayMiddleBorderColor);
-						MoveToEx(hdc, 11, 11, NULL);
-						LineTo(hdc, progressAreaWidth, 11);
+						MoveToEx(hdc, 11 + 12 + 3, 11 + 200 + 5, NULL); //Move to top-left corner
+						LineTo(hdc, progressAreaWidth + 12 + 3, 11 + 200 + 5); //Draw horizontal line to top-right corner
 						SelectObject(hdc, darkGrayInnerBorderColor);
-						MoveToEx(hdc, 12, 12, NULL);
-						LineTo(hdc, progressAreaWidth - 1, 12);
-						MoveToEx(hdc, 10, 11, NULL);
+						MoveToEx(hdc, 12 + 12 + 3, 12 + 200 + 5, NULL); //Move to bottom-left corner
+						LineTo(hdc, progressAreaWidth - 1 + 12 + 3, 12 + 200 + 5); //Draw horizontal line to bottom-right corner
+						MoveToEx(hdc, 10 + 12 + 3, 11 + 200 + 5, NULL);
 						SelectObject(hdc, lightGrayOuterBorderColor);
 						SelectObject(hdc, lightGrayMiddleBorderColor);
-						MoveToEx(hdc, 11, 12, NULL);
-						LineTo(hdc, 11, progressAreaHeight);
-						MoveToEx(hdc, 12, 13, NULL);
+						MoveToEx(hdc, 11 + 12 + 3, 12 + 200 + 5, NULL); //Move to bottom-left corner
+						LineTo(hdc, 11 + 12 + 3, progressAreaHeight + 200 + 5); //Draw vertical line to bottom-left corner
+						MoveToEx(hdc, 12 + 12 + 3, 13 + 200 + 5, NULL); //Move to bottom-left corner
 						SelectObject(hdc, darkGrayInnerBorderColor);
-						LineTo(hdc, 12, progressAreaHeight - 1);
-						MoveToEx(hdc, 12, progressAreaHeight - 1, NULL);
+						LineTo(hdc, 12 + 12 + 3, progressAreaHeight - 1 + 200 + 5); //Draw vertical line to bottom-left corner
+						MoveToEx(hdc, 12 + 12 + 3, progressAreaHeight - 1 + 200 + 5, NULL); //Move to bottom-left corner
 						SelectObject(hdc, lightGrayOuterBorderColor);
-						LineTo(hdc, progressAreaWidth, progressAreaHeight - 1);
-						MoveToEx(hdc, progressAreaWidth - 1, 12, NULL);
+						LineTo(hdc, progressAreaWidth + 12 + 3, progressAreaHeight - 1 + 200 + 5); //Draw horizontal line to bottom-right corner
+						MoveToEx(hdc, progressAreaWidth - 1 + 12 + 3, 12 + 200 + 5, NULL); //Move to top-right corner
 						SelectObject(hdc, lightGrayOuterBorderColor);
-						LineTo(hdc, progressAreaWidth - 1, progressAreaHeight);
-						MoveToEx(hdc, 11, progressAreaHeight, NULL);
+						LineTo(hdc, progressAreaWidth - 1 + 12 + 3, progressAreaHeight + 200 + 5); //Draw vertical line to bottom-right corner
+						MoveToEx(hdc, 11 + 12 + 3, progressAreaHeight + 200 + 5, NULL); //Move to bottom-left corner
 						SelectObject(hdc, GetStockObject(WHITE_PEN));
-						LineTo(hdc, progressAreaWidth - 1, progressAreaHeight);
+						LineTo(hdc, progressAreaWidth - 1 + 12 + 3, progressAreaHeight + 200 + 5); //Draw horizontal line to bottom-right corner
+						
+						//Legend
+						SelectObject(hdc, (HPEN)GetStockObject(BLACK_PEN));
+						SelectObject(hdc, darkBlueBrush);
+						Rectangle(hdc, (windowWidth - 185), 240, (windowWidth - 185) + 15, 255);
+						SelectObject(hdc, graySkippedDataBrush);
+						Rectangle(hdc, (windowWidth - 185), 260, (windowWidth - 185) + 15, 275);
+						SelectObject(hdc, redBrush);
+						Rectangle(hdc, (windowWidth - 185), 280, (windowWidth - 185) + 15, 295);
+						SelectObject(hdc, (HBRUSH)GetStockObject(WHITE_BRUSH));
+						Rectangle(hdc, (windowWidth - 185), 300, (windowWidth - 185) + 15, 315);
+						RECT textRect;
+						textRect.left = (windowWidth - 185) - 10;
+						textRect.right = (windowWidth - 185) + 20 + 200;
+						textRect.top = 216;
+						textRect.bottom = 220 + 20;
+						hOldFont = SelectObject(hdc, (HFONT)GetStockObject(DEFAULT_GUI_FONT));
+						SetBkMode(hdc, TRANSPARENT);
+						DrawText(hdc, L"Legend", 6, &textRect, DT_LEFT);
+						textRect.left = (windowWidth - 185) + 22;
+						textRect.right = (windowWidth - 185) + 20 + 200;
+						textRect.top = 241;
+						textRect.bottom = 240 + 20;
+						DrawText(hdc, L"Complete", 8, &textRect, DT_LEFT);
+						textRect.top = 261;
+						textRect.bottom = 260 + 20;
+						DrawText(hdc, L"Skipped (no data)", 17, &textRect, DT_LEFT);
+						textRect.top = 281;
+						textRect.bottom = 280 + 20;
+						DrawText(hdc, L"In progress", 11, &textRect, DT_LEFT);
+						textRect.top = 301;
+						textRect.bottom = 300 + 20;
+						DrawText(hdc, L"Waiting", 7, &textRect, DT_LEFT);
+						
 						SelectObject(hdc, hOldBrush);
 						SelectObject(hdc, hOldPen);
-						DeleteObject(lightGrayOuterBorderColor);
-						DeleteObject(lightGrayMiddleBorderColor);
-						DeleteObject(darkGrayInnerBorderColor);
+						SelectObject(hdc, hOldFont);
 					
 						EndPaint(hwndMainWin, &ps);
 					}
@@ -692,19 +753,25 @@ void calculateTotalRectanglesForGUI() {
 					windowWidth = windowRect.right - windowRect.left;
 					windowHeight = windowRect.bottom - windowRect.top;
 					MoveWindow(hwndStartBtn, (windowWidth - 150), (windowHeight - 88), 120, 25, TRUE);
-					MoveWindow(hwndInputFilenameLabel, 12, (windowHeight - 220), 200, 20, TRUE);
+					/*MoveWindow(hwndInputFilenameLabel, 12, (windowHeight - 220), 200, 20, TRUE);
 					MoveWindow(hwndOutputFilenameLabel, 12, (windowHeight - 190), 200, 20, TRUE);
 					MoveWindow(hwndInputFilenameField, 100, (windowHeight - 220), 390, 20, TRUE);
 					MoveWindow(hwndOutputFilenameField, 100, (windowHeight - 192), 390, 20, TRUE);
 					MoveWindow(hwndSplitLabel, 12, (windowHeight - 160), 150, 20, TRUE);
 					MoveWindow(hwndQuadtreeCombobox, 100, (windowHeight - 162), 140, 20, TRUE);
 					MoveWindow(hwndSplitCombobox, 250, (windowHeight - 162), 240, 20, TRUE);
-					MoveWindow(hwndRectangleCountLabel, 500, (windowHeight - 160), 200, 20, TRUE);
-					MoveWindow(hwndDetailedVectorMapProgressLabel, 12, (windowHeight - 130), 85, 20, TRUE);
-					MoveWindow(hwndDetailedVectorMapProgressBar, 100, (windowHeight - 132), 390, 20, TRUE);
-					MoveWindow(hwndProgressPercentLabel, 500, (windowHeight - 130), 80, 20, TRUE);
-					MoveWindow(hwndInputFilenameBrowseButton, 500, (windowHeight - 220), 80, 20, TRUE);
-					MoveWindow(hwndOutputFilenameBrowseButton, 500, (windowHeight - 192), 80, 20, TRUE);
+					MoveWindow(hwndRectangleCountLabel, 500, (windowHeight - 160), 200, 20, TRUE);*/
+					MoveWindow(hwndDetailedVectorMapProgressLabel, 12, (windowHeight - 162), 85, 20, TRUE);
+					MoveWindow(hwndZoomedOutVectorMapProgressLabel, 12, (windowHeight - 137), 85, 20, TRUE);
+					MoveWindow(hwndDetailedVectorMapProgressBar, 100, (windowHeight - 162), 390, 20, TRUE);
+					MoveWindow(hwndZoomedOutVectorMapProgressBar, 100, (windowHeight - 137), 390, 20, TRUE);
+					MoveWindow(hwndDetailedVectorMapProgressPercentLabel, 500, (windowHeight - 160), 80, 20, TRUE);
+					MoveWindow(hwndZoomedOutVectorMapProgressPercentLabel, 500, (windowHeight - 135), 80, 20, TRUE);
+					/*MoveWindow(hwndInputFilenameBrowseButton, 500, (windowHeight - 220), 80, 20, TRUE);
+					MoveWindow(hwndOutputFilenameBrowseButton, 500, (windowHeight - 192), 80, 20, TRUE);*/
+					MoveWindow(hwndFilesGroupbox, 12, 10, (windowWidth - 40), 90, TRUE);
+					MoveWindow(hwndSplitModeGroupbox, 12, 110, (windowWidth - 40), 70, TRUE);
+					MoveWindow(hwndBlockMapGroupbox, 12, 190, (windowWidth - 40), (windowHeight - 370), TRUE);
 					InvalidateRect(hwndMainWin, NULL, TRUE);
 					UpdateWindow(hwndMainWin);
 				}
@@ -735,12 +802,14 @@ void calculateTotalRectanglesForGUI() {
 									ofn.nMaxFile = MAX_PATH;
 									ofn.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_HIDEREADONLY;
 									ofn.lpstrDefExt = L"db";
-									if (GetOpenFileName(&ofn)) SetWindowText(hwndInputFilenameField, szFileName);
-									if (GetWindowTextLength(hwndOutputFilenameField) == 0) {
-										filesystem::path outputFilenamePath = wstring(szFileName);
-										outputFilenamePath = outputFilenamePath.parent_path() / outputFilenamePath.stem();
-										outputFilename = outputFilenamePath.string() + ".obf";
-										SetWindowText(hwndOutputFilenameField, utf8_to_wstring(outputFilename).c_str());
+									if (GetOpenFileName(&ofn)) {
+										SetWindowText(hwndInputFilenameField, szFileName);
+										if (GetWindowTextLength(hwndOutputFilenameField) == 0) {
+											filesystem::path outputFilenamePath = wstring(szFileName);
+											outputFilenamePath = outputFilenamePath.parent_path() / outputFilenamePath.stem();
+											outputFilename = outputFilenamePath.string() + ".obf";
+											SetWindowText(hwndOutputFilenameField, utf8_to_wstring(outputFilename).c_str());
+										}
 									}
 								}
 								break;
@@ -773,17 +842,33 @@ void calculateTotalRectanglesForGUI() {
 				break;
 			case WM_USER_REDRAW:
 				{
-					SendMessage(hwndDetailedVectorMapProgressBar, PBM_SETPOS, (WPARAM)((unsigned int)((progressCompletedRectangles * 65535) / progressTotalRectangles)), 0);
+					SendMessage(hwndDetailedVectorMapProgressBar, PBM_SETPOS, (WPARAM)((unsigned int)((progressCompletedDetailedVectorMapRectangles * 65535) / progressTotalDetailedVectorMapRectangles)), 0);
 					ostringstream percentStream;
-					percentStream << fixed << setprecision(3) << ((progressCompletedRectangles * 100.0) / progressTotalRectangles);
+					percentStream << fixed << setprecision(3) << ((progressCompletedDetailedVectorMapRectangles * 100.0) / progressTotalDetailedVectorMapRectangles);
 					wstring percentString = utf8_to_wstring(percentStream.str());
 					percentString += L"%";
-					SendMessage(hwndProgressPercentLabel, WM_SETTEXT, 0, (LPARAM)percentString.c_str());
+					SendMessage(hwndDetailedVectorMapProgressPercentLabel, WM_SETTEXT, 0, (LPARAM)percentString.c_str());
+					
+					if (progressTotalZoomedOutVectorMapRectangles > 0) {
+						SendMessage(hwndZoomedOutVectorMapProgressBar, PBM_SETPOS, (WPARAM)((unsigned int)((progressCompletedZoomedOutVectorMapRectangles * 65535) / progressTotalZoomedOutVectorMapRectangles)), 0);
+						percentStream.str("");
+						percentStream.clear();
+						percentStream << fixed << setprecision(3) << ((progressCompletedZoomedOutVectorMapRectangles * 100.0) / progressTotalZoomedOutVectorMapRectangles);
+						percentString = utf8_to_wstring(percentStream.str());
+						percentString += L"%";
+						SendMessage(hwndZoomedOutVectorMapProgressPercentLabel, WM_SETTEXT, 0, (LPARAM)percentString.c_str());
+					}
 					InvalidateRect(hwndMainWin, NULL, TRUE);
 					UpdateWindow(hwndMainWin);
 				}
 				break;
 			case WM_DESTROY:
+				DeleteObject(lightGrayOuterBorderColor);
+				DeleteObject(lightGrayMiddleBorderColor);
+				DeleteObject(darkGrayInnerBorderColor);
+				DeleteObject(darkBlueBrush);
+				DeleteObject(graySkippedDataBrush);
+				DeleteObject(redBrush);
 				PostQuitMessage(0);
 				break;
 		}
@@ -1127,6 +1212,7 @@ void writeOsmAndStructure_mapIndex_detailed_level_single_power_of_2_split(int po
 		threadInfo[i].additionalTypesByteArrayPtrWithinThread = additionalTypesByteArrayUniquePtrArrayForThreads[i].get();
 		threadInfo[i].stringNamesByteArrayPtrWithinThread = stringNamesByteArrayUniquePtrArrayForThreads[i].get();
 		threadInfo[i].mediumZoom = mediumZoom;
+		threadInfo[i].progressFinishedBlocks = (mediumZoom ? &progressCompletedZoomedOutVectorMapRectangles : &progressCompletedDetailedVectorMapRectangles);
 		threadHandles[i] = thread(writeOsmAndStructure_mapIndex_levels_block_SingleSplitThreadWorker, &threadInfo[i]);
 	}
 
@@ -1373,6 +1459,7 @@ void writeOsmAndStructure_mapIndex_detailed_level_4_4_pow2_split(int pow2, bool 
 		threadInfo[i].stringNamesByteArrayPtrWithinThread = stringNamesByteArrayUniquePtrArrayForThreads[i].get();
 		threadInfo[i].mediumZoom = mediumZoom;
 		threadInfo[i].mapDataBlockSizes = mapDataBlockSizes.get();
+		threadInfo[i].progressFinishedBlocks = (mediumZoom ? &progressCompletedZoomedOutVectorMapRectangles : &progressCompletedDetailedVectorMapRectangles);
 		threadHandles[i] = thread(writeOsmAndStructure_mapIndex_levels_block_SingleSplitThreadWorker, &threadInfo[i]);
 	}
 
@@ -1803,8 +1890,13 @@ void writeOsmAndStructure_mapIndex_detailed_level_4_4_4_pow2_split(int pow2, boo
 	threadInfo[2].stmt = thread2Stmt;
 	threadInfo[3].dbConnection = thread3DBConnection;
 	threadInfo[3].stmt = thread3Stmt;
-	progressCompletedRectangles.store(0);
-	progressTotalRectangles = totalBoxCount;
+	if (mediumZoom) {
+		progressTotalZoomedOutVectorMapRectangles = totalBoxCount;
+		progressCompletedZoomedOutVectorMapRectangles.store(0);
+	} else {
+		progressTotalDetailedVectorMapRectangles = totalBoxCount;
+		progressCompletedDetailedVectorMapRectangles.store(0);
+	}
 	for (int i = 0; i < 4; i++) {
 		threadInfo[i].rectangles = rectangles.get();
 		threadInfo[i].rectanglesCount = totalBoxCount;
@@ -1815,6 +1907,7 @@ void writeOsmAndStructure_mapIndex_detailed_level_4_4_4_pow2_split(int pow2, boo
 		threadInfo[i].stringNamesByteArrayPtrWithinThread = stringNamesByteArrayUniquePtrArrayForThreads[i].get();
 		threadInfo[i].mediumZoom = mediumZoom;
 		threadInfo[i].mapDataBlockSizes = mapDataBlockSizes.get();
+		threadInfo[i].progressFinishedBlocks = (mediumZoom ? &progressCompletedZoomedOutVectorMapRectangles : &progressCompletedDetailedVectorMapRectangles);
 		threadHandles[i] = thread(writeOsmAndStructure_mapIndex_levels_block_SingleSplitThreadWorker, &threadInfo[i]);
 	}
 
@@ -2199,7 +2292,7 @@ void writeOsmAndStructure_mapIndex_levels_block_SingleSplitThreadWorker(void *pa
 			PostMessage(hwndMainWin, WM_USER_REDRAW, NULL, NULL);
 		#endif
 		writeOsmAndStructure_mapIndex_levels_block(string("mapDataBlock" + to_string(blockIdx) + "_" + to_string(pid) + ".tmp"), &ptr->rectangles[blockIdx], blockIdx, ptr->dbConnection, ptr->stmt, wayNodeStmt, wayTagStmt, ptr->threadID, ptr->coordinatesByteArrayPtrWithinThread, ptr->typesByteArrayPtrWithinThread, ptr->additionalTypesByteArrayPtrWithinThread, ptr->stringNamesByteArrayPtrWithinThread, ptr->mediumZoom);
-		progressCompletedRectangles.fetch_add(1, memory_order_relaxed);
+		(*(ptr->progressFinishedBlocks)).fetch_add(1, memory_order_relaxed);
 		#if defined(_WIN32)
 			PostMessage(hwndMainWin, WM_USER_REDRAW, NULL, NULL);
 		#endif
@@ -2226,9 +2319,9 @@ void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRec
 	int wayTagStmtRC = sqlite3_step(wayTagStmt);
 	
 	if (shouldShowGUI) {
-		progressBitmapPtr[(blockIdx * 4)] = 0xe0;
-		progressBitmapPtr[(blockIdx * 4) + 1] = 0xe0;
-		progressBitmapPtr[(blockIdx * 4) + 2] = 0;
+		progressBitmapPtr[(blockIdx * 4)] = 0;
+		progressBitmapPtr[(blockIdx * 4) + 1] = 0;
+		progressBitmapPtr[(blockIdx * 4) + 2] = 0xff;
 		progressBitmapPtr[(blockIdx * 4) + 3] = 255;
 	}
 
@@ -2242,9 +2335,9 @@ void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRec
 		if (verbose) cout << endl << "Skipping block";
 		shouldSkipBlock = true;
 		if (shouldShowGUI) {
-			progressBitmapPtr[(blockIdx * 4)] = 0xc0;
-			progressBitmapPtr[(blockIdx * 4) + 1] = 0xc0;
-			progressBitmapPtr[(blockIdx * 4) + 2] = 0xc0;
+			progressBitmapPtr[(blockIdx * 4)] = 0xa0;
+			progressBitmapPtr[(blockIdx * 4) + 1] = 0xa0;
+			progressBitmapPtr[(blockIdx * 4) + 2] = 0xa0;
 			progressBitmapPtr[(blockIdx * 4) + 3] = 255;
 		}
 	}
@@ -2633,8 +2726,8 @@ void writeOsmAndStructure_mapIndex_levels_block(string tempFilename, BoundingRec
 		if (!shouldKeepTempFiles) remove(string("mapDataBlockStringTable_" + tempFilename).c_str());
 	}
 	if (shouldShowGUI && !shouldSkipBlock) {
-		progressBitmapPtr[(blockIdx * 4)] = 0;
-		progressBitmapPtr[(blockIdx * 4) + 1] = 0xc0;
+		progressBitmapPtr[(blockIdx * 4)] = 0x80;
+		progressBitmapPtr[(blockIdx * 4) + 1] = 0;
 		progressBitmapPtr[(blockIdx * 4) + 2] = 0x00;
 		progressBitmapPtr[(blockIdx * 4) + 3] = 255;
 	}
